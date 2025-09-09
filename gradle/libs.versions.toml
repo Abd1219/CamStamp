@@ -10,7 +10,8 @@ activityCompose = "1.10.1"
 composeBom = "2024.09.00"
 cameraX = "1.4.2"
 playServicesLocation = "21.3.0"
-concurrentFuturesKtx = "1.1.0" # Added version for concurrent-futures-ktx
+concurrentFuturesKtx = "1.1.0"
+guava = "32.1.3-android" # Added Guava version
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -36,7 +37,8 @@ androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycl
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
 
 google-play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
-androidx-concurrent-futures-ktx = { group = "androidx.concurrent", name = "concurrent-futures-ktx", version.ref = "concurrentFuturesKtx" } # Added concurrent-futures-ktx library
+androidx-concurrent-futures-ktx = { group = "androidx.concurrent", name = "concurrent-futures-ktx", version.ref = "concurrentFuturesKtx" }
+google-guava = { group = "com.google.guava", name = "guava", version.ref = "guava" } # Added Guava library
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
