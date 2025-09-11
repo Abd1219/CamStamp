@@ -52,6 +52,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.runtime.livedata)
     implementation(libs.androidx.concurrent.futures.ktx) // Added concurrent-futures-ktx
+    implementation(libs.exifinterface) // Corrected alias for reading image rotation
 
     // CameraX dependencies
     implementation(libs.androidx.camera.core)
