@@ -40,6 +40,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -55,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -91,14 +94,13 @@ import java.util.Locale
 import java.util.concurrent.Executor
 
 /**
- * Estampa una imagen con detalles como texto personalizado, fecha y coordenadas.
- * La operación se realiza directamente sobre el archivo de imagen proporcionado.
+ * Estampa una imagen con detalles, asegurando que el resultado final sea siempre vertical.
  *
  * @param photoFile El archivo de la foto que se va a modificar.
- * @param customText El texto personalizado para estampar, puede contener saltos de línea.
+ * @param customText El texto personalizado para estampar.
  * @param latitude La latitud para estampar.
  * @param longitude La longitud para estampar.
- * @param context El contexto de la aplicación para acceder a recursos.
+ * @param context El contexto de la aplicación.
  * @return `true` si el estampado fue exitoso, `false` en caso de error.
  */
 suspend fun stampImageWithDetails(
@@ -108,10 +110,9 @@ suspend fun stampImageWithDetails(
     longitude: Double?,
     context: Context
 ): Boolean {
-    // Se ejecuta en un hilo de fondo para no bloquear la UI
     return withContext(Dispatchers.IO) {
         try {
-            // --- Corrección de la rotación de la imagen ---
+            // 1. Cargar el bitmap y la orientación original desde EXIF
             val inputStream: InputStream = photoFile.inputStream()
             val originalBitmap = BitmapFactory.decodeStream(inputStream)
             inputStream.close()
@@ -119,111 +120,102 @@ suspend fun stampImageWithDetails(
             val exifInterface = ExifInterface(photoFile.absolutePath)
             val orientation = exifInterface.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED)
 
+            // 2. Crear un bitmap inicial con la orientación corregida (ponerlo "derecho")
             val matrix = Matrix()
             when (orientation) {
                 ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
                 ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
                 ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
             }
+            val uprightBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true)
+            originalBitmap.recycle() // Liberar memoria del bitmap original
 
-            val rotatedBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true)
-            val mutableBitmap = rotatedBitmap.copy(Bitmap.Config.ARGB_8888, true)
-
-            // Detecta y registra la orientación final de la imagen
-            if (mutableBitmap.width >= mutableBitmap.height) {
-                Log.d("StampUtils", "La foto detectada es Horizontal (Landscape).")
+            // 3. Forzar a que la imagen sea vertical si es horizontal
+            val finalBitmap = if (uprightBitmap.width > uprightBitmap.height) {
+                Log.d("StampUtils", "La imagen es horizontal, forzando a vertical.")
+                val rotationMatrix = Matrix().apply { postRotate(90f) }
+                val rotated = Bitmap.createBitmap(uprightBitmap, 0, 0, uprightBitmap.width, uprightBitmap.height, rotationMatrix, true)
+                uprightBitmap.recycle() // Liberar memoria del bitmap "derecho"
+                rotated
             } else {
-                Log.d("StampUtils", "La foto detectada es Vertical (Portrait).")
+                uprightBitmap
             }
 
-            // Prepara el Canvas para dibujar sobre el bitmap ya rotado y mutable
+            // 4. Preparar para dibujar sobre el bitmap final
+            val mutableBitmap = finalBitmap.copy(Bitmap.Config.ARGB_8888, true)
+            finalBitmap.recycle() // Liberar memoria
+            
             val canvas = Canvas(mutableBitmap)
             val resources = context.resources
-            // Convierte el tamaño de fuente de SP a píxeles para el Canvas
             val textSizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 24f, resources.displayMetrics)
             
-            // Configuración del pincel para el texto
             val textPaint = Paint().apply {
                 color = android.graphics.Color.YELLOW
                 this.textSize = textSizePx
                 isAntiAlias = true
-                textAlign = Paint.Align.RIGHT // Alinea el texto a la derecha
+                textAlign = Paint.Align.RIGHT
             }
-            // Configuración del pincel para el fondo del texto
             val backgroundPaint = Paint().apply {
-                color = android.graphics.Color.argb(128, 0, 0, 0) // Negro semitransparente
+                color = android.graphics.Color.argb(128, 0, 0, 0)
                 style = Paint.Style.FILL
             }
 
-            // Formatea la fecha y hora actual
+            // 5. Construir y dibujar el texto
             val dateTimeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
             val dateTimeString = dateTimeFormat.format(Date())
-            
-            // Construye la lista de líneas de texto a estampar
             val lines = mutableListOf<String>()
-            if (customText.isNotBlank()) {
-                // Si el texto personalizado tiene saltos de línea, lo divide en varias líneas
-                customText.split('\n').forEach { line ->
-                    if (line.isNotBlank()) {
-                        lines.add(line)
-                    }
-                }
-            }
+            customText.split('\n').forEach { line -> if (line.isNotBlank()) lines.add(line) }
             lines.add("Fecha: $dateTimeString")
             if (latitude != null && longitude != null) {
-                // Agrega las coordenadas con formato completo y sin prefijos
                 lines.add("$latitude, $longitude")
             }
 
-            if (lines.isEmpty()) return@withContext true // No hay nada que estampar
+            if (lines.isNotEmpty()) {
+                val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics)
+                var maxWidth = 0f
+                val tempRect = Rect()
+                for (line in lines) {
+                    textPaint.getTextBounds(line, 0, line.length, tempRect)
+                    if (tempRect.width() > maxWidth) maxWidth = tempRect.width().toFloat()
+                }
 
-            val padding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, resources.displayMetrics)
-            
-            // --- Lógica para el bloque de texto alineado a la derecha ---
+                val textAlignmentX = mutableBitmap.width - padding - (padding / 2f)
+                val effectiveLineHeight = textSizePx + padding
+                val totalBlockDrawingHeight = lines.size * effectiveLineHeight
+                val yPosOfTopVisualLine = mutableBitmap.height - padding - totalBlockDrawingHeight
+                val yPosOfBottomVisualLine = yPosOfTopVisualLine + (lines.size - 1) * effectiveLineHeight
 
-            // 1. Calcular el ancho máximo de todas las líneas de texto
-            var maxWidth = 0f
-            val tempRect = Rect()
-            for (line in lines) {
-                textPaint.getTextBounds(line, 0, line.length, tempRect)
-                if (tempRect.width() > maxWidth) {
-                    maxWidth = tempRect.width().toFloat()
+                val fm = textPaint.fontMetrics
+                canvas.drawRect(
+                    textAlignmentX - maxWidth - (padding / 2f),
+                    yPosOfTopVisualLine + fm.ascent - (padding / 2f),
+                    textAlignmentX + (padding / 2f),
+                    yPosOfBottomVisualLine + fm.descent + (padding / 2f),
+                    backgroundPaint
+                )
+
+                var currentLineBaselineY = yPosOfTopVisualLine
+                for (line in lines) {
+                    canvas.drawText(line, textAlignmentX, currentLineBaselineY, textPaint)
+                    currentLineBaselineY += effectiveLineHeight
                 }
             }
-
-            // 2. Definir coordenadas y dimensiones del bloque
-            val textAlignmentX = mutableBitmap.width - padding - (padding / 2f) // Coordenada X para alinear el texto a la derecha
-            val effectiveLineHeight = textSizePx + padding // Altura efectiva por línea (texto + espaciado)
-            val totalBlockDrawingHeight = lines.size * effectiveLineHeight // Altura total del bloque de texto
-
-            // Coordenada Y de la línea base de la primera línea de texto (la más alta visualmente)
-            val yPosOfTopVisualLine = mutableBitmap.height - padding - totalBlockDrawingHeight
-            // Coordenada Y de la línea base de la última línea de texto (la más baja visualmente)
-            val yPosOfBottomVisualLine = yPosOfTopVisualLine + (lines.size - 1) * effectiveLineHeight
-
-            // 3. Calcular y dibujar un único rectángulo de fondo para todo el bloque
-            val fm = textPaint.fontMetrics // Métricas de la fuente para un cálculo preciso de la altura
-            val bgTop = yPosOfTopVisualLine + fm.ascent - (padding / 2f)
-            val bgBottom = yPosOfBottomVisualLine + fm.descent + (padding / 2f)
-            val bgLeft = textAlignmentX - maxWidth - (padding / 2f)
-            val bgRight = textAlignmentX + (padding / 2f)
-            canvas.drawRect(bgLeft, bgTop, bgRight, bgBottom, backgroundPaint)
-
-            // 4. Dibujar cada línea de texto, de arriba hacia abajo
-            var currentLineBaselineY = yPosOfTopVisualLine
-            for (line in lines) {
-                canvas.drawText(line, textAlignmentX, currentLineBaselineY, textPaint)
-                currentLineBaselineY += effectiveLineHeight // Mueve la coordenada Y hacia abajo para la siguiente línea
-            }
             
-            // Guarda el bitmap modificado sobreescribiendo el archivo original
+            // 6. Guardar el bitmap final
             FileOutputStream(photoFile).use { out ->
                 mutableBitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
             }
-            Log.d("StampUtils", "Imagen estampada y guardada con éxito.")
+            mutableBitmap.recycle()
+
+            // 7. **LA SOLUCIÓN DEFINITIVA**: Resetear la etiqueta de orientación EXIF.
+            val finalExif = ExifInterface(photoFile.absolutePath)
+            finalExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+            finalExif.saveAttributes()
+            
+            Log.d("StampUtils", "Imagen procesada. La orientación EXIF ha sido reseteada a Normal.")
             true
         } catch (e: Exception) {
-            Log.e("StampUtils", "Error al estampar la imagen: ${e.message}", e)
+            Log.e("StampUtils", "Error al procesar la imagen: ${e.message}", e)
             false
         }
     }
@@ -247,27 +239,27 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(localContext) }
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
     var camera: Camera? by remember { mutableStateOf(null) }
-    var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) } // Inicia con la cámara trasera
-    var linearZoom by remember { mutableFloatStateOf(0f) } // Estado para el nivel de zoom (0f a 1f)
+    var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
+    var linearZoom by remember { mutableFloatStateOf(0f) }
     val zoomStateValue = camera?.cameraInfo?.zoomState?.observeAsState()?.value
+    var torchEnabled by remember { mutableStateOf(false) }
 
     // --- Estados de la Interfaz de Usuario (UI) ---
-    var showCustomTextDialog by remember { mutableStateOf(false) } // Controla la visibilidad del diálogo de texto
-    var currentCustomText by remember { mutableStateOf("") } // El texto que se estampará
-    var textFieldValue by remember { mutableStateOf("") } // El valor actual del campo de texto en el diálogo
-    var showFlashEffect by remember { mutableStateOf(false) } // Activa el efecto de flash blanco
-    val previewView = remember { PreviewView(localContext) } // La vista que muestra la previsualización de la cámara
+    var showCustomTextDialog by remember { mutableStateOf(false) }
+    var currentCustomText by remember { mutableStateOf("") }
+    var textFieldValue by remember { mutableStateOf("") }
+    var showFlashEffect by remember { mutableStateOf(false) }
+    val previewView = remember { PreviewView(localContext) }
     
     // --- Estados para la Miniatura y la Vista a Pantalla Completa ---
-    var lastPhotoUri by remember { mutableStateOf<Uri?>(null) } // URI de la última foto tomada
-    var thumbnailImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) } // Bitmap para la miniatura
-    var showFullScreenImageDialog by remember { mutableStateOf(false) } // Controla la visibilidad del diálogo de pantalla completa
-    var imageToShowInDialog by remember { mutableStateOf<Uri?>(null) } // URI de la imagen a mostrar en pantalla completa
-    var fullScreenImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) } // Bitmap para la imagen en pantalla completa
+    var lastPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var photoId by remember { mutableIntStateOf(0) } // El contador de fotos para refrescar la UI
+    var thumbnailImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var showFullScreenImageDialog by remember { mutableStateOf(false) }
+    var imageToShowInDialog by remember { mutableStateOf<Uri?>(null) }
+    var fullScreenImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
 
     // --- Funciones de Lógica ---
-
-    // Lambda para obtener la última ubicación conocida
     val getCurrentLocation: () -> Unit = {
         if (hasLocationPermission) {
             try {
@@ -285,56 +277,49 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // --- Efectos (LaunchedEffect) para manejar la lógica asíncrona y de ciclo de vida ---
-
     // Se ejecuta cuando cambia el permiso de la cámara o cualquiera de las otras claves.
     LaunchedEffect(hasCameraPermission, cameraProviderFuture, lifecycleOwner, cameraSelector, previewView) {
         if (hasCameraPermission) {
             try {
                 val cameraProvider = cameraProviderFuture.await()
-                cameraProvider.unbindAll() // Desvincula casos de uso anteriores
+                cameraProvider.unbindAll()
                 val cameraXPreview = CameraXPreview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
-                imageCapture = ImageCapture.Builder().setTargetRotation(previewView.display.rotation).build()
+                imageCapture = ImageCapture.Builder()
+                    .setTargetRotation(previewView.display.rotation)
+                    .build()
                 camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, cameraXPreview, imageCapture)
+                
+                // Si la nueva cámara no tiene flash, apaga el estado de la linterna
+                if (camera?.cameraInfo?.hasFlashUnit() == false) {
+                    torchEnabled = false
+                }
+                camera?.cameraControl?.enableTorch(torchEnabled) // Sincroniza el estado de la linterna
+
                 camera?.cameraInfo?.zoomState?.value?.linearZoom?.let { linearZoom = it }
             } catch (exc: Exception) { Log.e("CameraScreen", "Fallo al vincular casos de uso: ${exc.message}", exc) }
-        } // Si no hay permiso, no hace nada, la UI mostrará el mensaje correspondiente.
+        }
     }
 
-    suspend fun loadRotatedImage(uri: Uri): ImageBitmap? {
+    // Función simplificada para cargar una imagen. Ya no necesita rotar nada.
+    suspend fun loadFinalImage(uri: Uri): ImageBitmap? {
         return withContext(Dispatchers.IO) {
             try {
-                // Obtiene la ruta real del archivo desde la URI
-                val imagePath = uri.path ?: return@withContext null
-
-                // Decodifica el bitmap desde la ruta del archivo
-                val originalBitmap = BitmapFactory.decodeFile(imagePath) ?: return@withContext null
-                
-                // Obtiene los datos EXIF desde la ruta del archivo (más fiable)
-                val exifInterface = ExifInterface(imagePath)
-                val orientation = exifInterface.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED)
-
-                val matrix = Matrix()
-                when (orientation) {
-                    ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                    ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                    ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                // Usar ContentResolver es el método más robusto para leer desde una URI.
+                localContext.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    BitmapFactory.decodeStream(inputStream)?.asImageBitmap()
                 }
-
-                val rotatedBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true)
-                rotatedBitmap.asImageBitmap()
             } catch (e: Exception) {
-                Log.e("ImageLoader", "Error al cargar la imagen rotada: ${e.message}", e)
+                Log.e("ImageLoader", "Error al cargar la imagen final: ${e.message}", e)
                 null
             }
         }
     }
 
-    // Se ejecuta cuando `lastPhotoUri` cambia. Carga la nueva foto como un bitmap para la miniatura.
-    LaunchedEffect(lastPhotoUri) {
-        if (lastPhotoUri != null) {
-            thumbnailImageBitmap = loadRotatedImage(lastPhotoUri!!)
-        } else {
+    // Se ejecuta cuando `photoId` cambia. Carga la nueva foto como un bitmap para la miniatura.
+    LaunchedEffect(photoId) {
+        if (photoId > 0 && lastPhotoUri != null) { // Asegurarse de que no se ejecute en la primera composición
+            thumbnailImageBitmap = loadFinalImage(lastPhotoUri!!)
+        } else if (photoId == 0) {
             thumbnailImageBitmap = null
         }
     }
@@ -342,7 +327,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     // Se ejecuta cuando `imageToShowInDialog` cambia. Carga la imagen para verla en pantalla completa.
     LaunchedEffect(imageToShowInDialog) {
         if (imageToShowInDialog != null) {
-            fullScreenImageBitmap = loadRotatedImage(imageToShowInDialog!!)
+            fullScreenImageBitmap = loadFinalImage(imageToShowInDialog!!)
             if(fullScreenImageBitmap == null) {
                 showFullScreenImageDialog = false // Si falla la carga, no mostrar el diálogo
             }
@@ -351,14 +336,10 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Observa y actualiza el estado del zoom
     LaunchedEffect(zoomStateValue?.linearZoom) { zoomStateValue?.linearZoom?.let { if (it != linearZoom) linearZoom = it } }
-    
-    // Controla la duración del efecto de flash visual
     LaunchedEffect(showFlashEffect) { if (showFlashEffect) { delay(150L); showFlashEffect = false } }
 
     // --- Controladores de Permisos ---
-
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> hasCameraPermission = granted }
     val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         val fineGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
@@ -369,46 +350,42 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Se ejecuta una vez al iniciar el Composable para verificar y solicitar permisos.
     LaunchedEffect(Unit) {
         if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         } else {
-            hasCameraPermission = true // Si el permiso ya estaba dado, actualiza el estado
+            hasCameraPermission = true
         }
 
         if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else {
             hasLocationPermission = true
-            getCurrentLocation() // Si el permiso ya estaba dado, obtiene la ubicación
+            getCurrentLocation()
         }
     }
     
     // --- Funciones de Acción ---
-
     fun toggleCamera() { cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA; linearZoom = 0f }
     
     fun takePhoto(cameraExecutor: Executor) {
         val imageCaptureInstance = imageCapture ?: return
-        showFlashEffect = true // Activa el flash visual
-        getCurrentLocation() // Actualiza la ubicación justo antes de tomar la foto
+        showFlashEffect = true
+        getCurrentLocation()
         val photoFile = File(localContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US).format(System.currentTimeMillis())}.jpg")
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
 
         imageCaptureInstance.takePicture(outputOptions, cameraExecutor, object : ImageCapture.OnImageSavedCallback {
             override fun onError(exc: ImageCaptureException) { Log.e("CameraScreen", "Fallo al capturar foto: ${exc.message}", exc) }
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                val savedUri = output.savedUri
-                Log.d("CameraScreen", "Foto capturada con éxito: $savedUri")
-                lastPhotoUri = savedUri
+                Log.d("CameraScreen", "Foto capturada con éxito, procesando...")
+                
                 lifecycleOwner.lifecycleScope.launch {
-                    // Llama a la función para estampar la imagen después de guardarla
                     val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext)
-                    if (stamped && savedUri != null) {
-                        // Refresca la URI para que Compose detecte el cambio en el archivo y actualice la miniatura
-                        lastPhotoUri = null 
+                    if (stamped) {
+                        // Actualizar la URI y el contador para forzar el refresco de la UI
                         lastPhotoUri = Uri.fromFile(photoFile)
+                        photoId++
                     }
                 }
             }
@@ -416,8 +393,6 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     }
 
     // --- Composición de la Interfaz de Usuario (UI) ---
-
-    // Diálogo para introducir el texto personalizado
     if (showCustomTextDialog) {
         AlertDialog(
             onDismissRequest = { showCustomTextDialog = false },
@@ -428,7 +403,6 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    // Diálogo para mostrar la imagen en pantalla completa
     if (showFullScreenImageDialog && fullScreenImageBitmap != null) {
         Dialog(onDismissRequest = { showFullScreenImageDialog = false; imageToShowInDialog = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Box(modifier = Modifier.fillMaxSize().background(ComposeColor.Black.copy(alpha = 0.8f)).clickable { showFullScreenImageDialog = false; imageToShowInDialog = null }, contentAlignment = Alignment.Center) {
@@ -437,52 +411,62 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Layout principal de la pantalla
     Column(modifier = modifier.fillMaxSize().background(ComposeColor.Black)) {
-        // Barra superior (con botón para editar texto)
         Box(modifier = Modifier.fillMaxWidth().height(100.dp).background(ComposeColor.Black.copy(alpha = 0.5f))) { 
-            IconButton(onClick = { textFieldValue = currentCustomText; showCustomTextDialog = true }, modifier = Modifier.align(Alignment.CenterStart).padding(16.dp)) {
-                Icon(imageVector = Icons.Filled.Edit, contentDescription = "Texto Personalizado", tint = ComposeColor.White)
+            Row(
+                modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = { textFieldValue = currentCustomText; showCustomTextDialog = true }) {
+                    Icon(imageVector = Icons.Filled.Edit, contentDescription = "Texto Personalizado", tint = ComposeColor.White)
+                }
+                // Solo muestra el botón si la cámara actual tiene flash
+                if (camera?.cameraInfo?.hasFlashUnit() == true) {
+                    IconButton(onClick = {
+                        val newTorchState = !torchEnabled
+                        camera?.cameraControl?.enableTorch(newTorchState)
+                        torchEnabled = newTorchState
+                    }) {
+                        Icon(
+                            imageVector = if (torchEnabled) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
+                            contentDescription = "Activar/Desactivar Linterna",
+                            tint = if (torchEnabled) ComposeColor.Yellow else ComposeColor.White
+                        )
+                    }
+                }
             }
         }
         
-        // Área de la previsualización de la cámara
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) { 
             if (hasCameraPermission) {
                 AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
-            }
-            else {
-                // Muestra mensaje si no hay permiso de cámara
+            } else {
                 Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                     Text("Se requiere permiso de cámara para usar esta función.", color = ComposeColor.White)
                 }
             }
-            // Muestra el efecto de flash sobre la previsualización
             if (showFlashEffect) {
                 Box(modifier = Modifier.fillMaxSize().background(ComposeColor.White)) 
             }
         }
         
-        // Barra inferior (con controles de la cámara)
         Box(modifier = Modifier.fillMaxWidth().height(150.dp).background(ComposeColor.Black.copy(alpha = 0.5f))) { 
             Row(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                // Control deslizante para el zoom
                 Box(modifier = Modifier.fillMaxHeight().width(60.dp), contentAlignment = Alignment.Center) { 
                     Slider(value = linearZoom, onValueChange = { linearZoom = it; camera?.cameraControl?.setLinearZoom(it) }, valueRange = 0f..1f, modifier = Modifier.graphicsLayer(rotationZ = -90f).width(120.dp).height(50.dp))
                 }
-                // Botón para tomar la foto
+                
                 IconButton(onClick = { 
                     if (hasCameraPermission && hasLocationPermission) { 
                         takePhoto(ContextCompat.getMainExecutor(localContext)) 
                     } else { 
-                        // Si faltan permisos, los solicita
                         if(!hasCameraPermission) cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         if(!hasLocationPermission) locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                     } 
                 }, modifier = Modifier.size(72.dp)) { 
                     Icon(imageVector = Icons.Filled.PhotoCamera, contentDescription = "Tomar Foto", tint = ComposeColor.White, modifier = Modifier.size(64.dp))
                 }
-                // Controles secundarios (miniatura y cambio de cámara)
+                
                 Row(verticalAlignment = Alignment.CenterVertically) { 
                     IconButton(onClick = {
                         if (lastPhotoUri != null) {
