@@ -1,17 +1,22 @@
 package com.abdapps.camstamp
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
-import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import android.util.TypedValue
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -20,7 +25,6 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.Preview as CameraXPreview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
@@ -53,6 +57,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -63,7 +68,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -72,8 +76,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.concurrent.futures.await
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
@@ -92,9 +94,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
+import androidx.camera.core.Preview as CameraXPreview
+import androidx.compose.ui.graphics.Color as ComposeColor
 
 /**
- * Estampa una imagen con detalles, asegurando que el resultado final sea siempre vertical.
+ * Estampa una imagen con detalles, forzando siempre orientación vertical (portrait).
+ * 
+ * Todas las fotos se guardan en orientación vertical sin importar cómo se tomaron,
+ * para mantener consistencia visual en la galería.
  *
  * @param photoFile El archivo de la foto que se va a modificar.
  * @param customText El texto personalizado para estampar.
@@ -111,43 +118,104 @@ suspend fun stampImageWithDetails(
     context: Context
 ): Boolean {
     return withContext(Dispatchers.IO) {
+        var originalBitmap: Bitmap? = null
+        var uprightBitmap: Bitmap? = null
+        var finalBitmap: Bitmap? = null
+        var mutableBitmap: Bitmap? = null
+        
         try {
             // 1. Cargar el bitmap y la orientación original desde EXIF
             val inputStream: InputStream = photoFile.inputStream()
-            val originalBitmap = BitmapFactory.decodeStream(inputStream)
+            originalBitmap = BitmapFactory.decodeStream(inputStream)
             inputStream.close()
+
+            if (originalBitmap == null || originalBitmap.isRecycled) {
+                Log.e("StampUtils", "No se pudo cargar el bitmap o está reciclado")
+                return@withContext false
+            }
 
             val exifInterface = ExifInterface(photoFile.absolutePath)
             val orientation = exifInterface.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED)
+            
+            Log.d("StampUtils", "Orientación EXIF original: $orientation")
+            Log.d("StampUtils", "Dimensiones originales: ${originalBitmap.width}x${originalBitmap.height}")
 
-            // 2. Crear un bitmap inicial con la orientación corregida (ponerlo "derecho")
+            // 2. Aplicar la rotación EXIF para mostrar la imagen correctamente
             val matrix = Matrix()
+            var rotationDegrees = 0f
             when (orientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                ExifInterface.ORIENTATION_ROTATE_90 -> rotationDegrees = 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> rotationDegrees = 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> rotationDegrees = 270f
+                ExifInterface.ORIENTATION_NORMAL -> rotationDegrees = 0f
+                else -> rotationDegrees = 0f
             }
-            val uprightBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true)
-            originalBitmap.recycle() // Liberar memoria del bitmap original
-
-            // 3. Forzar a que la imagen sea vertical si es horizontal
-            val finalBitmap = if (uprightBitmap.width > uprightBitmap.height) {
-                Log.d("StampUtils", "La imagen es horizontal, forzando a vertical.")
-                val rotationMatrix = Matrix().apply { postRotate(90f) }
-                val rotated = Bitmap.createBitmap(uprightBitmap, 0, 0, uprightBitmap.width, uprightBitmap.height, rotationMatrix, true)
-                uprightBitmap.recycle() // Liberar memoria del bitmap "derecho"
-                rotated
+            
+            if (rotationDegrees != 0f) {
+                matrix.postRotate(rotationDegrees)
+                uprightBitmap = Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true)
+                originalBitmap.recycle()
+                originalBitmap = null
+                Log.d("StampUtils", "Imagen rotada ${rotationDegrees}°. Nuevas dimensiones: ${uprightBitmap.width}x${uprightBitmap.height}")
             } else {
+                uprightBitmap = originalBitmap
+                Log.d("StampUtils", "No se requiere rotación")
+            }
+
+            if (uprightBitmap == null || uprightBitmap.isRecycled) {
+                Log.e("StampUtils", "El bitmap uprightBitmap está reciclado")
+                return@withContext false
+            }
+
+            // 3. Forzar todas las imágenes a orientación vertical (método simple y confiable)
+            finalBitmap = if (uprightBitmap.width > uprightBitmap.height) {
+                // La imagen es horizontal (ancho > alto), rotarla 90° para hacerla vertical
+                Log.d("StampUtils", "Imagen horizontal detectada (${uprightBitmap.width}x${uprightBitmap.height}), rotando 90° a vertical")
+                
+                val rotationMatrix = Matrix().apply { postRotate(90f) }
+                val rotatedBitmap = Bitmap.createBitmap(uprightBitmap, 0, 0, uprightBitmap.width, uprightBitmap.height, rotationMatrix, true)
+                
+                // Liberar el bitmap anterior si se creó uno nuevo
+                if (rotatedBitmap != uprightBitmap) {
+                    uprightBitmap.recycle()
+                    uprightBitmap = null
+                }
+                
+                Log.d("StampUtils", "Imagen rotada a vertical: ${rotatedBitmap.width}x${rotatedBitmap.height}")
+                rotatedBitmap
+            } else {
+                Log.d("StampUtils", "Imagen ya es vertical (${uprightBitmap.width}x${uprightBitmap.height}), manteniéndola")
                 uprightBitmap
+            }
+            Log.d("StampUtils", "Imagen final: ${finalBitmap.width}x${finalBitmap.height}")
+
+            if (finalBitmap == null || finalBitmap.isRecycled) {
+                Log.e("StampUtils", "El bitmap finalBitmap está reciclado")
+                return@withContext false
             }
 
             // 4. Preparar para dibujar sobre el bitmap final
-            val mutableBitmap = finalBitmap.copy(Bitmap.Config.ARGB_8888, true)
-            finalBitmap.recycle() // Liberar memoria
+            mutableBitmap = finalBitmap.copy(Bitmap.Config.ARGB_8888, true)
+            
+            if (mutableBitmap == null || mutableBitmap.isRecycled) {
+                Log.e("StampUtils", "No se pudo crear el bitmap mutable")
+                return@withContext false
+            }
             
             val canvas = Canvas(mutableBitmap)
             val resources = context.resources
-            val textSizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 24f, resources.displayMetrics)
+            
+            // Calcular tamaño de texto proporcional al tamaño de la imagen
+            val imageSize = kotlin.math.min(mutableBitmap.width, mutableBitmap.height)
+            val baseFontSize = when {
+                imageSize > 3000 -> 32f  // Imágenes muy grandes
+                imageSize > 2000 -> 28f  // Imágenes grandes
+                imageSize > 1500 -> 24f  // Imágenes medianas
+                else -> 20f              // Imágenes pequeñas
+            }
+            val textSizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, baseFontSize, resources.displayMetrics)
+            
+            Log.d("StampUtils", "Tamaño de imagen: ${mutableBitmap.width}x${mutableBitmap.height}, Tamaño de fuente: ${baseFontSize}sp")
             
             val textPaint = Paint().apply {
                 color = android.graphics.Color.YELLOW
@@ -205,9 +273,8 @@ suspend fun stampImageWithDetails(
             FileOutputStream(photoFile).use { out ->
                 mutableBitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
             }
-            mutableBitmap.recycle()
 
-            // 7. **LA SOLUCIÓN DEFINITIVA**: Resetear la etiqueta de orientación EXIF.
+            // 7. Resetear la etiqueta de orientación EXIF.
             val finalExif = ExifInterface(photoFile.absolutePath)
             finalExif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             finalExif.saveAttributes()
@@ -217,6 +284,16 @@ suspend fun stampImageWithDetails(
         } catch (e: Exception) {
             Log.e("StampUtils", "Error al procesar la imagen: ${e.message}", e)
             false
+        } finally {
+            // Limpiar memoria de bitmaps
+            try {
+                originalBitmap?.let { if (!it.isRecycled) it.recycle() }
+                uprightBitmap?.let { if (!it.isRecycled && it != finalBitmap) it.recycle() }
+                finalBitmap?.let { if (!it.isRecycled && it != mutableBitmap) it.recycle() }
+                mutableBitmap?.let { if (!it.isRecycled) it.recycle() }
+            } catch (e: Exception) {
+                Log.w("StampUtils", "Error al limpiar bitmaps: ${e.message}")
+            }
         }
     }
 }
@@ -251,15 +328,50 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     var showFlashEffect by remember { mutableStateOf(false) }
     val previewView = remember { PreviewView(localContext) }
     
-    // --- Estados para la Miniatura y la Vista a Pantalla Completa ---
+    // --- Estados para la Miniatura ---
     var lastPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var photoId by remember { mutableIntStateOf(0) } // El contador de fotos para refrescar la UI
     var thumbnailImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    var showFullScreenImageDialog by remember { mutableStateOf(false) }
-    var imageToShowInDialog by remember { mutableStateOf<Uri?>(null) }
-    var fullScreenImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    
+    // --- Estados para Mensajes de Éxito/Error ---
+    var showMessageDialog by remember { mutableStateOf(false) }
+    var messageTitle by remember { mutableStateOf("") }
+    var messageText by remember { mutableStateOf("") }
+    var isSuccessMessage by remember { mutableStateOf(true) }
+    var hasShownThumbnailTip by remember { mutableStateOf(false) }
+    
+
 
     // --- Funciones de Lógica ---
+    val showSuccessMessage: (String) -> Unit = { message ->
+        messageTitle = "¡Éxito!"
+        messageText = message
+        isSuccessMessage = true
+        showMessageDialog = true
+    }
+    
+    val showErrorMessage: (String) -> Unit = { message ->
+        messageTitle = "Error"
+        messageText = message
+        isSuccessMessage = false
+        showMessageDialog = true
+    }
+    
+    val openImageInGallery: (Uri) -> Unit = { uri ->
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "image/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            localContext.startActivity(intent)
+        } catch (e: Exception) {
+            Log.e("CameraScreen", "Error al abrir la imagen en la galería: ${e.message}", e)
+            showErrorMessage("No se pudo abrir la imagen en la galería")
+        }
+    }
+    
+
+    
     val getCurrentLocation: () -> Unit = {
         if (hasLocationPermission) {
             try {
@@ -286,6 +398,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 val cameraXPreview = CameraXPreview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
                 imageCapture = ImageCapture.Builder()
                     .setTargetRotation(previewView.display.rotation)
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                     .build()
                 camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, cameraXPreview, imageCapture)
                 
@@ -324,20 +437,20 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
     
-    // Se ejecuta cuando `imageToShowInDialog` cambia. Carga la imagen para verla en pantalla completa.
-    LaunchedEffect(imageToShowInDialog) {
-        if (imageToShowInDialog != null) {
-            fullScreenImageBitmap = loadFinalImage(imageToShowInDialog!!)
-            if(fullScreenImageBitmap == null) {
-                showFullScreenImageDialog = false // Si falla la carga, no mostrar el diálogo
-            }
-        } else {
-            fullScreenImageBitmap = null
-        }
-    }
+
 
     LaunchedEffect(zoomStateValue?.linearZoom) { zoomStateValue?.linearZoom?.let { if (it != linearZoom) linearZoom = it } }
     LaunchedEffect(showFlashEffect) { if (showFlashEffect) { delay(150L); showFlashEffect = false } }
+    
+    // Auto-ocultar mensaje de éxito después de 3 segundos
+    LaunchedEffect(showMessageDialog, isSuccessMessage) {
+        if (showMessageDialog && isSuccessMessage) {
+            delay(3000L)
+            showMessageDialog = false
+        }
+    }
+    
+
 
     // --- Controladores de Permisos ---
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> hasCameraPermission = granted }
@@ -365,6 +478,36 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
     
+    suspend fun saveFileToMediaStore(context: Context, file: File): Uri? {
+        return withContext(Dispatchers.IO) {
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "IMG_${System.currentTimeMillis()}.jpg")
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/CamStamp")
+                }
+            }
+
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            
+            uri?.let {
+                try {
+                    resolver.openOutputStream(it)?.use { outputStream ->
+                        file.inputStream().use { inputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                    Log.d("CameraScreen", "Archivo copiado a MediaStore: $it")
+                } catch (e: Exception) {
+                    Log.e("CameraScreen", "Error al copiar a MediaStore: ${e.message}", e)
+                    return@withContext null
+                }
+            }
+            uri
+        }
+    }
+
     // --- Funciones de Acción ---
     fun toggleCamera() { cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA; linearZoom = 0f }
     
@@ -372,20 +515,52 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         val imageCaptureInstance = imageCapture ?: return
         showFlashEffect = true
         getCurrentLocation()
-        val photoFile = File(localContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "${SimpleDateFormat("yyyy-MM-dd-HH-mm-ss-SSS", Locale.US).format(System.currentTimeMillis())}.jpg")
+        
+        // 1. Guardar en un archivo temporal primero
+        val photoFile = File.createTempFile("CamStamp_temp", ".jpg", localContext.cacheDir)
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
 
         imageCaptureInstance.takePicture(outputOptions, cameraExecutor, object : ImageCapture.OnImageSavedCallback {
-            override fun onError(exc: ImageCaptureException) { Log.e("CameraScreen", "Fallo al capturar foto: ${exc.message}", exc) }
+            override fun onError(exc: ImageCaptureException) { 
+                Log.e("CameraScreen", "Fallo al capturar foto: ${exc.message}", exc)
+                showErrorMessage("Error al capturar la foto: ${exc.message}")
+            }
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                Log.d("CameraScreen", "Foto capturada con éxito, procesando...")
+                Log.d("CameraScreen", "Foto temporal guardada en: ${output.savedUri}")
                 
                 lifecycleOwner.lifecycleScope.launch {
-                    val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext)
-                    if (stamped) {
-                        // Actualizar la URI y el contador para forzar el refresco de la UI
-                        lastPhotoUri = Uri.fromFile(photoFile)
-                        photoId++
+                    try {
+                        // 2. Procesar la imagen (rotar, estampar, corregir EXIF)
+                        val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext)
+                        if (stamped) {
+                            // 3. Mover la imagen procesada a la galería pública
+                            val publicUri = saveFileToMediaStore(localContext, photoFile)
+                            if (publicUri != null) {
+                                // 4. Actualizar la UI con la URI pública
+                                lastPhotoUri = publicUri
+                                photoId++
+                                
+                                val successMessage = if (!hasShownThumbnailTip) {
+                                    hasShownThumbnailTip = true
+                                    "Foto guardada exitosamente.\n\nTip: Toca la miniatura para abrir en galería."
+                                } else {
+                                    "Foto guardada exitosamente en la galería"
+                                }
+                                showSuccessMessage(successMessage)
+                            } else {
+                                Log.e("CameraScreen", "No se pudo guardar la foto en la galería.")
+                                showErrorMessage("No se pudo guardar la foto en la galería")
+                            }
+                        } else {
+                            showErrorMessage("Error al procesar la imagen")
+                        }
+                        // 5. Borrar el archivo temporal
+                        photoFile.delete()
+                    } catch (e: Exception) {
+                        Log.e("CameraScreen", "Error inesperado al procesar la foto: ${e.message}", e)
+                        showErrorMessage("Error inesperado: ${e.message}")
+                        // Asegurar que se borre el archivo temporal incluso si hay error
+                        try { photoFile.delete() } catch (deleteException: Exception) { /* Ignorar */ }
                     }
                 }
             }
@@ -403,13 +578,25 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    if (showFullScreenImageDialog && fullScreenImageBitmap != null) {
-        Dialog(onDismissRequest = { showFullScreenImageDialog = false; imageToShowInDialog = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(modifier = Modifier.fillMaxSize().background(ComposeColor.Black.copy(alpha = 0.8f)).clickable { showFullScreenImageDialog = false; imageToShowInDialog = null }, contentAlignment = Alignment.Center) {
-                Image(bitmap = fullScreenImageBitmap!!, contentDescription = "Imagen a pantalla completa", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+    if (showMessageDialog) {
+        AlertDialog(
+            onDismissRequest = { showMessageDialog = false },
+            title = { 
+                Text(
+                    text = messageTitle,
+                    color = if (isSuccessMessage) ComposeColor.Green else ComposeColor.Red
+                )
+            },
+            text = { Text(messageText) },
+            confirmButton = { 
+                Button(onClick = { showMessageDialog = false }) { 
+                    Text("Aceptar") 
+                } 
             }
-        }
+        )
     }
+
+
 
     Column(modifier = modifier.fillMaxSize().background(ComposeColor.Black)) {
         Box(modifier = Modifier.fillMaxWidth().height(100.dp).background(ComposeColor.Black.copy(alpha = 0.5f))) { 
@@ -470,14 +657,23 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) { 
                     IconButton(onClick = {
                         if (lastPhotoUri != null) {
-                            imageToShowInDialog = lastPhotoUri
-                            showFullScreenImageDialog = true
+                            openImageInGallery(lastPhotoUri!!)
                         }
                     }) {
                         if (thumbnailImageBitmap != null) {
-                            Image(bitmap = thumbnailImageBitmap!!, contentDescription = "Miniatura de la última foto", modifier = Modifier.size(40.dp), contentScale = ContentScale.Crop)
+                            Image(
+                                bitmap = thumbnailImageBitmap!!, 
+                                contentDescription = "Miniatura - Clic para abrir en galería", 
+                                modifier = Modifier.size(40.dp), 
+                                contentScale = ContentScale.Crop
+                            )
                         } else {
-                            Icon(imageVector = Icons.Filled.PhotoLibrary, contentDescription = "Previsualización de Imagen", tint = ComposeColor.White, modifier = Modifier.size(40.dp))
+                            Icon(
+                                imageVector = Icons.Filled.PhotoLibrary, 
+                                contentDescription = "Previsualización de Imagen", 
+                                tint = ComposeColor.White, 
+                                modifier = Modifier.size(40.dp)
+                            )
                         }
                     }
                     Spacer(modifier = Modifier.width(8.dp))
