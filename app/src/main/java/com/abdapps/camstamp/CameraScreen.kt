@@ -707,30 +707,29 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(Unit) {
-        // Verificar permisos de forma síncrona primero
-        hasCameraPermission = ContextCompat.checkSelfPermission(localContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        hasLocationPermission = ContextCompat.checkSelfPermission(localContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        
-        // Verificar permiso de almacenamiento
-        hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(localContext, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true // Para versiones anteriores, el permiso se otorga automáticamente
-        }
-        
-        // Solicitar permisos solo si no los tenemos
-        if (!hasCameraPermission) {
+        if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        } else {
+            hasCameraPermission = true
         }
 
-        if (!hasLocationPermission) {
+        if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else {
+            hasLocationPermission = true
             getCurrentLocation()
         }
         
-        if (!hasStoragePermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            storagePermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+        // Verificar permiso de almacenamiento para Android 13+ (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                storagePermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+            } else {
+                hasStoragePermission = true
+            }
+        } else {
+            // Para versiones anteriores, el permiso se otorga automáticamente
+            hasStoragePermission = true
         }
     }
     
@@ -992,11 +991,6 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     IconButton(onClick = {
                         if (lastPhotoUri != null) {
                             openImageInGallery(lastPhotoUri!!)
-                        } else if (!hasStoragePermission) {
-                            // Solicitar permiso de almacenamiento si no lo tenemos
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                storagePermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
-                            }
                         }
                     }) {
                         if (thumbnailImageBitmap != null) {
@@ -1009,8 +1003,8 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                         } else {
                             Icon(
                                 imageVector = Icons.Filled.PhotoLibrary, 
-                                contentDescription = if (hasStoragePermission) "Previsualización de Imagen" else "Solicitar permisos de galería", 
-                                tint = if (hasStoragePermission || lastPhotoUri != null) ComposeColor.White else ComposeColor.Gray, 
+                                contentDescription = "Previsualización de Imagen", 
+                                tint = ComposeColor.White, 
                                 modifier = Modifier.size(40.dp)
                             )
                         }
