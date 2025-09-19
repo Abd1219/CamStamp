@@ -1,6 +1,7 @@
 package com.abdapps.camstamp
 
 import android.Manifest
+import android.database.Cursor
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -221,8 +222,8 @@ suspend fun stampImageWithDetails(
                 imageArea > 10_000_000 -> 32f  // Imágenes muy grandes (>10MP)
                 imageArea > 5_000_000 -> 28f   // Imágenes grandes (5-10MP)
                 imageArea > 2_000_000 -> 24f   // Imágenes medianas (2-5MP)
-                imageArea > 1_000_000 -> 20f   // Imágenes pequeñas (1-2MP)
-                else -> 16f                    // Imágenes muy pequeñas (<1MP)
+                imageArea > 1_000_000 -> 10f   // Imágenes pequeñas (1-2MP) - Aún más pequeño
+                else -> 8f                     // Imágenes muy pequeñas (<1MP)
             }
             val textSizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, baseFontSize, resources.displayMetrics)
             
@@ -319,6 +320,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasCameraPermission by remember { mutableStateOf(false) }
     var hasLocationPermission by remember { mutableStateOf(false) }
+    var hasStoragePermission by remember { mutableStateOf(false) }
     var latitude by remember { mutableStateOf<Double?>(null) }
     var longitude by remember { mutableStateOf<Double?>(null) }
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(localContext) }
@@ -553,6 +555,57 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    // Función para obtener la última foto de la carpeta CamStamp
+    suspend fun getLastPhotoFromGallery(): Uri? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val projection = arrayOf(
+                    MediaStore.Images.Media._ID,
+                    MediaStore.Images.Media.DATE_ADDED,
+                    MediaStore.Images.Media.RELATIVE_PATH
+                )
+                
+                val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
+                } else {
+                    null
+                }
+                
+                val selectionArgs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    arrayOf("%CamStamp%")
+                } else {
+                    null
+                }
+                
+                val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+                
+                val cursor: Cursor? = localContext.contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    sortOrder
+                )
+                
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                        val id = it.getLong(idColumn)
+                        val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+                        Log.d("CameraScreen", "Última foto encontrada en galería: $uri")
+                        return@withContext uri
+                    }
+                }
+                
+                Log.d("CameraScreen", "No se encontraron fotos en la carpeta CamStamp")
+                null
+            } catch (e: Exception) {
+                Log.e("CameraScreen", "Error al buscar última foto: ${e.message}", e)
+                null
+            }
+        }
+    }
+
     // Función simplificada para cargar una imagen. Ya no necesita rotar nada.
     suspend fun loadFinalImage(uri: Uri): ImageBitmap? {
         return withContext(Dispatchers.IO) {
@@ -590,7 +643,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
     
-    // Cargar texto personalizado y preferencia de calidad al iniciar
+    // Cargar texto personalizado, preferencia de calidad y última foto al iniciar
     LaunchedEffect(Unit) {
         val savedText = loadCustomText()
         currentCustomText = savedText
@@ -598,6 +651,16 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         
         val savedQuality = loadQualityPreference()
         isHighQuality = savedQuality
+        
+        // Cargar la última foto de la galería solo si tenemos permisos de almacenamiento
+        if (hasStoragePermission && lastPhotoUri == null) {
+            val lastPhoto = getLastPhotoFromGallery()
+            if (lastPhoto != null) {
+                lastPhotoUri = lastPhoto
+                thumbnailImageBitmap = loadFinalImage(lastPhoto)
+                Log.d("CameraScreen", "Miniatura cargada con la última foto de la galería")
+            }
+        }
     }
     
     // Registrar sensor de orientación
@@ -626,19 +689,48 @@ fun CameraScreen(modifier: Modifier = Modifier) {
             getCurrentLocation()
         }
     }
+    val storagePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> 
+        hasStoragePermission = granted
+        if (granted) {
+            // Intentar cargar la última foto cuando se otorgue el permiso
+            lifecycleOwner.lifecycleScope.launch {
+                if (lastPhotoUri == null) {
+                    val lastPhoto = getLastPhotoFromGallery()
+                    if (lastPhoto != null) {
+                        lastPhotoUri = lastPhoto
+                        thumbnailImageBitmap = loadFinalImage(lastPhoto)
+                        Log.d("CameraScreen", "Miniatura cargada tras otorgar permisos de almacenamiento")
+                    }
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
-        if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        // Verificar permisos de forma síncrona primero
+        hasCameraPermission = ContextCompat.checkSelfPermission(localContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        hasLocationPermission = ContextCompat.checkSelfPermission(localContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        
+        // Verificar permiso de almacenamiento
+        hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(localContext, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
         } else {
-            hasCameraPermission = true
+            true // Para versiones anteriores, el permiso se otorga automáticamente
+        }
+        
+        // Solicitar permisos solo si no los tenemos
+        if (!hasCameraPermission) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
 
-        if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        if (!hasLocationPermission) {
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else {
-            hasLocationPermission = true
             getCurrentLocation()
+        }
+        
+        if (!hasStoragePermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            storagePermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
         }
     }
     
@@ -900,6 +992,11 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     IconButton(onClick = {
                         if (lastPhotoUri != null) {
                             openImageInGallery(lastPhotoUri!!)
+                        } else if (!hasStoragePermission) {
+                            // Solicitar permiso de almacenamiento si no lo tenemos
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                storagePermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+                            }
                         }
                     }) {
                         if (thumbnailImageBitmap != null) {
@@ -912,8 +1009,8 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                         } else {
                             Icon(
                                 imageVector = Icons.Filled.PhotoLibrary, 
-                                contentDescription = "Previsualización de Imagen", 
-                                tint = ComposeColor.White, 
+                                contentDescription = if (hasStoragePermission) "Previsualización de Imagen" else "Solicitar permisos de galería", 
+                                tint = if (hasStoragePermission || lastPhotoUri != null) ComposeColor.White else ComposeColor.Gray, 
                                 modifier = Modifier.size(40.dp)
                             )
                         }
