@@ -1,11 +1,10 @@
 package com.abdapps.camstamp
 
 import android.Manifest
-import android.database.Cursor
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.database.Cursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -33,6 +32,7 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -49,12 +49,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -74,13 +75,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.concurrent.futures.await
 import androidx.core.content.ContextCompat
@@ -101,8 +107,137 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
+import kotlin.math.cos
+import kotlin.math.sin
 import androidx.camera.core.Preview as CameraXPreview
 import androidx.compose.ui.graphics.Color as ComposeColor
+
+/**
+ * Dibuja una brújula en el canvas de la imagen
+ */
+fun drawCompassOnCanvas(
+    canvas: Canvas,
+    bitmap: Bitmap,
+    azimuth: Float,
+    latitude: Double?,
+    longitude: Double?,
+    accuracy: Int,
+    resources: android.content.res.Resources
+) {
+    // Calcular tamaño de la brújula proporcional a la imagen
+    val compassSize = minOf(bitmap.width, bitmap.height) * 0.36f // 36% del lado menor (3x más grande)
+    val centerX = bitmap.width * 0.20f // Posición ajustada para la brújula más grande
+    val centerY = bitmap.height * 0.20f
+    val radius = compassSize / 2f - 10f
+    
+    // Configurar paints
+    val circlePaint = Paint().apply {
+        color = android.graphics.Color.argb(80, 0, 0, 0) // Fondo más transparente
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    
+    val strokePaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        isAntiAlias = true
+    }
+    
+    val textPaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        textSize = compassSize * 0.08f
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+    }
+    
+    val needlePaint = Paint().apply {
+        color = android.graphics.Color.RED
+        strokeWidth = 4f
+        isAntiAlias = true
+    }
+    
+    // Dibujar fondo circular
+    canvas.drawCircle(centerX, centerY, compassSize / 2f, circlePaint)
+    
+    // Dibujar círculo exterior
+    canvas.drawCircle(centerX, centerY, radius, strokePaint)
+    
+    // Dibujar marcas de dirección (N, S, E, W)
+    val directions = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
+    directions.forEach { (direction, angle) ->
+        val angleRad = Math.toRadians((angle - 90).toDouble())
+        val x = centerX + (radius - 20f) * cos(angleRad).toFloat()
+        val y = centerY + (radius - 20f) * sin(angleRad).toFloat() + textPaint.textSize / 3f
+        
+        val directionPaint = Paint().apply {
+            color = if (direction == "N") android.graphics.Color.RED else android.graphics.Color.WHITE
+            textSize = compassSize * 0.1f
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        
+        canvas.drawText(direction, x, y, directionPaint)
+    }
+    
+    // Dibujar marcas de grados cada 30°
+    for (i in 0 until 360 step 30) {
+        val angleRad = Math.toRadians((i - 90).toDouble())
+        val startX = centerX + (radius - 15f) * cos(angleRad).toFloat()
+        val startY = centerY + (radius - 15f) * sin(angleRad).toFloat()
+        val endX = centerX + radius * cos(angleRad).toFloat()
+        val endY = centerY + radius * sin(angleRad).toFloat()
+        
+        canvas.drawLine(startX, startY, endX, endY, strokePaint)
+    }
+    
+    // Dibujar aguja de la brújula (apunta al norte magnético)
+    val needleAngleRad = Math.toRadians((azimuth - 90).toDouble())
+    val needleEndX = centerX + (radius - 25f) * cos(needleAngleRad).toFloat()
+    val needleEndY = centerY + (radius - 25f) * sin(needleAngleRad).toFloat()
+    
+    canvas.drawLine(centerX, centerY, needleEndX, needleEndY, needlePaint)
+    
+    // Dibujar triángulo en la punta de la aguja
+    val triangleSize = 12f
+    val tipAngle1 = needleAngleRad + Math.PI / 6
+    val tipAngle2 = needleAngleRad - Math.PI / 6
+    
+    val tip1X = needleEndX + triangleSize * cos(tipAngle1 + Math.PI).toFloat()
+    val tip1Y = needleEndY + triangleSize * sin(tipAngle1 + Math.PI).toFloat()
+    val tip2X = needleEndX + triangleSize * cos(tipAngle2 + Math.PI).toFloat()
+    val tip2Y = needleEndY + triangleSize * sin(tipAngle2 + Math.PI).toFloat()
+    
+    canvas.drawLine(needleEndX, needleEndY, tip1X, tip1Y, needlePaint)
+    canvas.drawLine(needleEndX, needleEndY, tip2X, tip2Y, needlePaint)
+    
+    // Dibujar información central
+    val infoPaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        textSize = compassSize * 0.06f
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+    }
+    
+    // Azimuth
+    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - 10f, infoPaint)
+    
+    // Dirección cardinal
+    val direction = getDirectionFromAzimuth(azimuth)
+    canvas.drawText(direction, centerX, centerY + 10f, infoPaint)
+    
+    // Coordenadas (si están disponibles)
+    if (latitude != null && longitude != null) {
+        val coordPaint = Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = compassSize * 0.04f
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        canvas.drawText("${String.format("%.4f", latitude)}°", centerX, centerY + 25f, coordPaint)
+        canvas.drawText("${String.format("%.4f", longitude)}°", centerX, centerY + 35f, coordPaint)
+    }
+}
 
 /**
  * Estampa una imagen con detalles, forzando siempre orientación vertical (portrait).
@@ -123,7 +258,10 @@ suspend fun stampImageWithDetails(
     latitude: Double?,
     longitude: Double?,
     context: Context,
-    wasDeviceHorizontal: Boolean = false
+    wasDeviceHorizontal: Boolean = false,
+    showCompass: Boolean = false,
+    azimuth: Float = 0f,
+    compassAccuracy: Int = SensorManager.SENSOR_STATUS_UNRELIABLE
 ): Boolean {
     return withContext(Dispatchers.IO) {
         var originalBitmap: Bitmap? = null
@@ -281,6 +419,11 @@ suspend fun stampImageWithDetails(
                 }
             }
             
+            // 5.5. Dibujar brújula si está activada
+            if (showCompass) {
+                drawCompassOnCanvas(canvas, mutableBitmap, azimuth, latitude, longitude, compassAccuracy, resources)
+            }
+            
             // 6. Guardar el bitmap final
             FileOutputStream(photoFile).use { out ->
                 mutableBitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
@@ -311,6 +454,164 @@ suspend fun stampImageWithDetails(
 }
 
 /**
+ * Composable que muestra una brújula circular con dirección y coordenadas
+ */
+@Composable
+fun CompassOverlay(
+    azimuth: Float,
+    latitude: Double?,
+    longitude: Double?,
+    accuracy: Int,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(200.dp)
+            .background(
+                ComposeColor.Black.copy(alpha = 0.3f),
+                shape = androidx.compose.foundation.shape.CircleShape
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val radius = size.minDimension / 2f - 20.dp.toPx()
+            
+            // Dibujar círculo exterior
+            drawCircle(
+                color = ComposeColor.White,
+                radius = radius,
+                center = center,
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+            )
+            
+            // Dibujar marcas de dirección (N, S, E, W)
+            val directions = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
+            directions.forEach { (direction, angle) ->
+                val angleRad = Math.toRadians((angle - 90).toDouble())
+                val x = center.x + (radius - 15.dp.toPx()) * cos(angleRad).toFloat()
+                val y = center.y + (radius - 15.dp.toPx()) * sin(angleRad).toFloat()
+                
+                drawContext.canvas.nativeCanvas.drawText(
+                    direction,
+                    x,
+                    y + 5.dp.toPx(),
+                    android.graphics.Paint().apply {
+                        color = if (direction == "N") android.graphics.Color.RED else android.graphics.Color.WHITE
+                        textSize = 16.sp.toPx()
+                        textAlign = android.graphics.Paint.Align.CENTER
+                        isAntiAlias = true
+                    }
+                )
+            }
+            
+            // Dibujar marcas de grados
+            for (i in 0 until 360 step 30) {
+                val angleRad = Math.toRadians((i - 90).toDouble())
+                val startX = center.x + (radius - 10.dp.toPx()) * cos(angleRad).toFloat()
+                val startY = center.y + (radius - 10.dp.toPx()) * sin(angleRad).toFloat()
+                val endX = center.x + radius * cos(angleRad).toFloat()
+                val endY = center.y + radius * sin(angleRad).toFloat()
+                
+                drawLine(
+                    color = ComposeColor.White,
+                    start = Offset(startX, startY),
+                    end = Offset(endX, endY),
+                    strokeWidth = 1.dp.toPx()
+                )
+            }
+            
+            // Dibujar aguja de la brújula
+            rotate(azimuth, center) {
+                // Aguja principal (apunta al norte magnético)
+                drawLine(
+                    color = ComposeColor.Red,
+                    start = center,
+                    end = Offset(center.x, center.y - radius + 20.dp.toPx()),
+                    strokeWidth = 3.dp.toPx()
+                )
+                
+                // Triángulo en la punta
+                val triangleSize = 8.dp.toPx()
+                val tipY = center.y - radius + 20.dp.toPx()
+                drawLine(
+                    color = ComposeColor.Red,
+                    start = Offset(center.x - triangleSize, tipY + triangleSize),
+                    end = Offset(center.x, tipY),
+                    strokeWidth = 3.dp.toPx()
+                )
+                drawLine(
+                    color = ComposeColor.Red,
+                    start = Offset(center.x + triangleSize, tipY + triangleSize),
+                    end = Offset(center.x, tipY),
+                    strokeWidth = 3.dp.toPx()
+                )
+            }
+        }
+        
+        // Información central
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "${azimuth.toInt()}°",
+                color = ComposeColor.White,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            
+            Text(
+                text = getDirectionFromAzimuth(azimuth),
+                color = ComposeColor.White,
+                fontSize = 16.sp
+            )
+            
+            if (latitude != null && longitude != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "${String.format("%.4f", latitude)}°",
+                    color = ComposeColor.White,
+                    fontSize = 10.sp
+                )
+                Text(
+                    text = "${String.format("%.4f", longitude)}°",
+                    color = ComposeColor.White,
+                    fontSize = 10.sp
+                )
+            }
+            
+            // Indicador de precisión
+            val accuracyText = when (accuracy) {
+                SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "Alta"
+                SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "Media"
+                SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "Baja"
+                else -> "Sin calibrar"
+            }
+            
+            Text(
+                text = "Precisión: $accuracyText",
+                color = when (accuracy) {
+                    SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> ComposeColor.Green
+                    SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> ComposeColor.Yellow
+                    else -> ComposeColor.Red
+                },
+                fontSize = 8.sp
+            )
+        }
+    }
+}
+
+/**
+ * Convierte el azimuth en grados a dirección cardinal
+ */
+fun getDirectionFromAzimuth(azimuth: Float): String {
+    val directions = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    val index = ((azimuth + 22.5f) / 45f).toInt() % 8
+    return directions[index]
+}
+
+/**
  * El Composable principal que muestra la pantalla de la cámara, controles y previsualizaciones.
  */
 @Composable
@@ -320,14 +621,14 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var hasCameraPermission by remember { mutableStateOf(false) }
     var hasLocationPermission by remember { mutableStateOf(false) }
-    var hasStoragePermission by remember { mutableStateOf(false) }
     var latitude by remember { mutableStateOf<Double?>(null) }
     var longitude by remember { mutableStateOf<Double?>(null) }
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(localContext) }
     
-    // --- Sensor Manager para orientación ---
+    // --- Sensor Manager para orientación y brújula ---
     val sensorManager = remember { localContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager }
     val accelerometer = remember { sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) }
+    val magnetometer = remember { sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD) }
 
     // --- Estados y Objetos de CameraX ---
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(localContext) }
@@ -363,6 +664,17 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     
     // --- Estado para calidad de imagen ---
     var isHighQuality by remember { mutableStateOf(true) } // true = 4096x3072, false = 1440x1920
+    
+    // --- Estados para la brújula ---
+    var showCompass by remember { mutableStateOf(false) }
+    var azimuth by remember { mutableFloatStateOf(0f) } // Dirección de la brújula en grados
+    var compassAccuracy by remember { mutableIntStateOf(SensorManager.SENSOR_STATUS_UNRELIABLE) }
+    
+    // Arrays para los sensores de la brújula
+    val accelerometerReading = remember { FloatArray(3) }
+    val magnetometerReading = remember { FloatArray(3) }
+    val rotationMatrix = remember { FloatArray(9) }
+    val orientationAngles = remember { FloatArray(3) }
     
 
 
@@ -475,34 +787,63 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
     
-    // --- Listener del sensor de orientación ---
+    // --- Listener del sensor de orientación y brújula ---
     val sensorEventListener = remember {
         object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent?) {
                 event?.let {
-                    val x = it.values[0]
-                    val y = it.values[1]
-                    
-                    // Calcular orientación basada en acelerómetro
-                    val orientation = when {
-                        kotlin.math.abs(x) > kotlin.math.abs(y) -> {
-                            if (kotlin.math.abs(x) > 2.0) "Horizontal" else currentOrientation
+                    when (it.sensor.type) {
+                        Sensor.TYPE_ACCELEROMETER -> {
+                            // Copiar valores del acelerómetro
+                            System.arraycopy(it.values, 0, accelerometerReading, 0, accelerometerReading.size)
+                            
+                            // Calcular orientación del dispositivo
+                            val x = it.values[0]
+                            val y = it.values[1]
+                            
+                            val orientation = when {
+                                kotlin.math.abs(x) > kotlin.math.abs(y) -> {
+                                    if (kotlin.math.abs(x) > 2.0) "Horizontal" else currentOrientation
+                                }
+                                kotlin.math.abs(y) > kotlin.math.abs(x) -> {
+                                    if (kotlin.math.abs(y) > 8.0) "Vertical" else currentOrientation
+                                }
+                                else -> currentOrientation
+                            }
+                            
+                            if (orientation != currentOrientation) {
+                                currentOrientation = orientation
+                                isDeviceHorizontal = (orientation == "Horizontal")
+                                Log.d("CameraScreen", "Orientación detectada por sensor: $orientation")
+                            }
                         }
-                        kotlin.math.abs(y) > kotlin.math.abs(x) -> {
-                            if (kotlin.math.abs(y) > 8.0) "Vertical" else currentOrientation
+                        
+                        Sensor.TYPE_MAGNETIC_FIELD -> {
+                            // Copiar valores del magnetómetro
+                            System.arraycopy(it.values, 0, magnetometerReading, 0, magnetometerReading.size)
                         }
-                        else -> currentOrientation
                     }
                     
-                    if (orientation != currentOrientation) {
-                        currentOrientation = orientation
-                        isDeviceHorizontal = (orientation == "Horizontal")
-                        Log.d("CameraScreen", "Orientación detectada por sensor: $orientation")
+                    // Calcular azimuth de la brújula si tenemos ambos sensores
+                    if (accelerometerReading[0] != 0f && magnetometerReading[0] != 0f) {
+                        val success = SensorManager.getRotationMatrix(
+                            rotationMatrix, null, accelerometerReading, magnetometerReading
+                        )
+                        if (success) {
+                            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                            val azimuthInRadians = orientationAngles[0]
+                            val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
+                            azimuth = (azimuthInDegrees + 360) % 360 // Normalizar a 0-360
+                        }
                     }
                 }
             }
             
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+                if (sensor?.type == Sensor.TYPE_MAGNETIC_FIELD) {
+                    compassAccuracy = accuracy
+                }
+            }
         }
     }
     
@@ -652,20 +993,15 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         val savedQuality = loadQualityPreference()
         isHighQuality = savedQuality
         
-        // Cargar la última foto de la galería solo si tenemos permisos de almacenamiento
-        if (hasStoragePermission && lastPhotoUri == null) {
-            val lastPhoto = getLastPhotoFromGallery()
-            if (lastPhoto != null) {
-                lastPhotoUri = lastPhoto
-                thumbnailImageBitmap = loadFinalImage(lastPhoto)
-                Log.d("CameraScreen", "Miniatura cargada con la última foto de la galería")
-            }
-        }
+
     }
     
-    // Registrar sensor de orientación
+    // Registrar sensores de orientación y brújula
     LaunchedEffect(Unit) {
         accelerometer?.let { sensor ->
+            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_UI)
+        }
+        magnetometer?.let { sensor ->
             sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_UI)
         }
     }
@@ -689,49 +1025,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
             getCurrentLocation()
         }
     }
-    val storagePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> 
-        hasStoragePermission = granted
-        if (granted) {
-            // Intentar cargar la última foto cuando se otorgue el permiso
-            lifecycleOwner.lifecycleScope.launch {
-                if (lastPhotoUri == null) {
-                    val lastPhoto = getLastPhotoFromGallery()
-                    if (lastPhoto != null) {
-                        lastPhotoUri = lastPhoto
-                        thumbnailImageBitmap = loadFinalImage(lastPhoto)
-                        Log.d("CameraScreen", "Miniatura cargada tras otorgar permisos de almacenamiento")
-                    }
-                }
-            }
-        }
-    }
 
-    LaunchedEffect(Unit) {
-        if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-        } else {
-            hasCameraPermission = true
-        }
-
-        if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-        } else {
-            hasLocationPermission = true
-            getCurrentLocation()
-        }
-        
-        // Verificar permiso de almacenamiento para Android 13+ (API 33+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(localContext, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
-                storagePermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
-            } else {
-                hasStoragePermission = true
-            }
-        } else {
-            // Para versiones anteriores, el permiso se otorga automáticamente
-            hasStoragePermission = true
-        }
-    }
     
     suspend fun saveFileToMediaStore(context: Context, file: File): Uri? {
         return withContext(Dispatchers.IO) {
@@ -787,7 +1081,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 lifecycleOwner.lifecycleScope.launch {
                     try {
                         // 2. Procesar la imagen (rotar, estampar, corregir EXIF)
-                        val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext, isDeviceHorizontal)
+                        val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext, isDeviceHorizontal, showCompass, azimuth, compassAccuracy)
                         if (stamped) {
                             // 3. Mover la imagen procesada a la galería pública
                             val publicUri = saveFileToMediaStore(localContext, photoFile)
@@ -920,6 +1214,18 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     }
                 }
             }
+            
+            // Botón de brújula en la esquina superior derecha
+            IconButton(
+                onClick = { showCompass = !showCompass },
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Explore,
+                    contentDescription = if (showCompass) "Ocultar Brújula" else "Mostrar Brújula",
+                    tint = if (showCompass) ComposeColor.Green else ComposeColor.White
+                )
+            }
         }
         
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) { 
@@ -932,6 +1238,17 @@ fun CameraScreen(modifier: Modifier = Modifier) {
             }
             if (showFlashEffect) {
                 Box(modifier = Modifier.fillMaxSize().background(ComposeColor.White)) 
+            }
+            
+            // Mostrar brújula en el centro si está activa
+            if (showCompass) {
+                CompassOverlay(
+                    azimuth = azimuth,
+                    latitude = latitude,
+                    longitude = longitude,
+                    accuracy = compassAccuracy,
+                    modifier = Modifier.align(Alignment.Center)
+                )
             }
         }
         
@@ -970,8 +1287,8 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                             ),
                             modifier = Modifier
                                 .graphicsLayer(rotationZ = -90f)
-                                .width(140.dp) // Slider más largo
-                                .height(60.dp) // Área táctil más grande
+                                .width(200.dp) // Slider más largo (aumentado de 140dp)
+                                .height(80.dp) // Área táctil más grande (aumentado de 60dp)
                         )
                     }
                 }
