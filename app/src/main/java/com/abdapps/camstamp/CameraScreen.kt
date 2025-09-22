@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.database.Cursor
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -47,6 +46,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Explore
@@ -121,8 +121,7 @@ fun drawCompassOnCanvas(
     azimuth: Float,
     latitude: Double?,
     longitude: Double?,
-    accuracy: Int,
-    resources: android.content.res.Resources
+    accuracy: Int
 ) {
     // Calcular tamaño de la brújula proporcional a la imagen
     val compassSize = minOf(bitmap.width, bitmap.height) * 0.36f // 36% del lado menor (3x más grande)
@@ -192,7 +191,7 @@ fun drawCompassOnCanvas(
     }
     
     // Dibujar aguja de la brújula (apunta al norte magnético)
-    val needleAngleRad = Math.toRadians((azimuth - 90).toDouble())
+    val needleAngleRad = Math.toRadians((-azimuth - 90).toDouble())
     val needleEndX = centerX + (radius - 25f) * cos(needleAngleRad).toFloat()
     val needleEndY = centerY + (radius - 25f) * sin(needleAngleRad).toFloat()
     
@@ -211,32 +210,56 @@ fun drawCompassOnCanvas(
     canvas.drawLine(needleEndX, needleEndY, tip1X, tip1Y, needlePaint)
     canvas.drawLine(needleEndX, needleEndY, tip2X, tip2Y, needlePaint)
     
-    // Dibujar información central
+    // Dibujar información central con mejor tamaño y espaciado
     val infoPaint = Paint().apply {
         color = android.graphics.Color.WHITE
-        textSize = compassSize * 0.06f
+        textSize = compassSize * 0.12f // Aumentado de 0.06f a 0.12f (2x más grande)
         textAlign = Paint.Align.CENTER
         isAntiAlias = true
+        isFakeBoldText = true // Texto en negrita para mejor legibilidad
     }
     
-    // Azimuth
-    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - 10f, infoPaint)
+    // Azimuth con mayor espaciado
+    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - 30f, infoPaint)
     
     // Dirección cardinal
     val direction = getDirectionFromAzimuth(azimuth)
     canvas.drawText(direction, centerX, centerY + 10f, infoPaint)
     
-    // Coordenadas (si están disponibles)
+    // Coordenadas (si están disponibles) con mejor espaciado
     if (latitude != null && longitude != null) {
         val coordPaint = Paint().apply {
             color = android.graphics.Color.WHITE
-            textSize = compassSize * 0.04f
+            textSize = compassSize * 0.08f // Aumentado de 0.04f a 0.08f (2x más grande)
             textAlign = Paint.Align.CENTER
             isAntiAlias = true
         }
-        canvas.drawText("${String.format("%.4f", latitude)}°", centerX, centerY + 25f, coordPaint)
-        canvas.drawText("${String.format("%.4f", longitude)}°", centerX, centerY + 35f, coordPaint)
+        canvas.drawText("${String.format(Locale.US, "%.4f", latitude)}°", centerX, centerY + 55f, coordPaint)
+        canvas.drawText("${String.format(Locale.US, "%.4f", longitude)}°", centerX, centerY + 80f, coordPaint)
     }
+    
+    // Indicador de precisión de la brújula
+    val accuracyText = when (accuracy) {
+        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "Alta"
+        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "Media"
+        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "Baja"
+        else -> "Sin calibrar"
+    }
+    
+    val accuracyColor = when (accuracy) {
+        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> android.graphics.Color.GREEN
+        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> android.graphics.Color.YELLOW
+        else -> android.graphics.Color.RED
+    }
+    
+    val accuracyPaint = Paint().apply {
+        color = accuracyColor
+        textSize = compassSize * 0.07f // Aumentado de 0.035f a 0.07f (2x más grande)
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+    }
+    
+    canvas.drawText("Precisión: $accuracyText", centerX, centerY + 110f, accuracyPaint)
 }
 
 /**
@@ -365,7 +388,7 @@ suspend fun stampImageWithDetails(
             }
             val textSizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, baseFontSize, resources.displayMetrics)
             
-            Log.d("StampUtils", "Imagen: ${mutableBitmap.width}x${mutableBitmap.height} (${String.format("%.1f", imageArea/1_000_000f)}MP), Fuente: ${baseFontSize}sp")
+            Log.d("StampUtils", "Imagen: ${mutableBitmap.width}x${mutableBitmap.height} (${String.format(Locale.US, "%.1f", imageArea/1_000_000f)}MP), Fuente: ${baseFontSize}sp")
             
             val textPaint = Paint().apply {
                 color = android.graphics.Color.YELLOW
@@ -421,7 +444,7 @@ suspend fun stampImageWithDetails(
             
             // 5.5. Dibujar brújula si está activada
             if (showCompass) {
-                drawCompassOnCanvas(canvas, mutableBitmap, azimuth, latitude, longitude, compassAccuracy, resources)
+                drawCompassOnCanvas(canvas, mutableBitmap, azimuth, latitude, longitude, compassAccuracy)
             }
             
             // 6. Guardar el bitmap final
@@ -469,7 +492,7 @@ fun CompassOverlay(
             .size(200.dp)
             .background(
                 ComposeColor.Black.copy(alpha = 0.3f),
-                shape = androidx.compose.foundation.shape.CircleShape
+                shape = CircleShape
             ),
         contentAlignment = Alignment.Center
     ) {
@@ -522,7 +545,7 @@ fun CompassOverlay(
             }
             
             // Dibujar aguja de la brújula
-            rotate(azimuth, center) {
+            rotate(-azimuth, center) {
                 // Aguja principal (apunta al norte magnético)
                 drawLine(
                     color = ComposeColor.Red,
@@ -570,12 +593,12 @@ fun CompassOverlay(
             if (latitude != null && longitude != null) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "${String.format("%.4f", latitude)}°",
+                    text = "${String.format(Locale.US, "%.4f", latitude)}°",
                     color = ComposeColor.White,
                     fontSize = 10.sp
                 )
                 Text(
-                    text = "${String.format("%.4f", longitude)}°",
+                    text = "${String.format(Locale.US, "%.4f", longitude)}°",
                     color = ComposeColor.White,
                     fontSize = 10.sp
                 )
@@ -669,6 +692,10 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     var showCompass by remember { mutableStateOf(false) }
     var azimuth by remember { mutableFloatStateOf(0f) } // Dirección de la brújula en grados
     var compassAccuracy by remember { mutableIntStateOf(SensorManager.SENSOR_STATUS_UNRELIABLE) }
+    
+    // --- Filtro de suavizado para la brújula ---
+    val azimuthHistory = remember { mutableListOf<Float>() }
+    val maxHistorySize = 5 // Promedio de las últimas 5 lecturas
     
     // Arrays para los sensores de la brújula
     val accelerometerReading = remember { FloatArray(3) }
@@ -833,7 +860,20 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                             SensorManager.getOrientation(rotationMatrix, orientationAngles)
                             val azimuthInRadians = orientationAngles[0]
                             val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
-                            azimuth = (azimuthInDegrees + 360) % 360 // Normalizar a 0-360
+                            val normalizedAzimuth = (azimuthInDegrees + 360) % 360
+                            
+                            // Aplicar filtro de suavizado
+                            azimuthHistory.add(normalizedAzimuth)
+                            if (azimuthHistory.size > maxHistorySize) {
+                                azimuthHistory.removeAt(0)
+                            }
+                            
+                            // Calcular promedio suavizado
+                            azimuth = if (azimuthHistory.size >= 3) {
+                                azimuthHistory.average().toFloat()
+                            } else {
+                                normalizedAzimuth
+                            }
                         }
                     }
                 }
@@ -896,56 +936,6 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Función para obtener la última foto de la carpeta CamStamp
-    suspend fun getLastPhotoFromGallery(): Uri? {
-        return withContext(Dispatchers.IO) {
-            try {
-                val projection = arrayOf(
-                    MediaStore.Images.Media._ID,
-                    MediaStore.Images.Media.DATE_ADDED,
-                    MediaStore.Images.Media.RELATIVE_PATH
-                )
-                
-                val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
-                } else {
-                    null
-                }
-                
-                val selectionArgs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    arrayOf("%CamStamp%")
-                } else {
-                    null
-                }
-                
-                val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
-                
-                val cursor: Cursor? = localContext.contentResolver.query(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    projection,
-                    selection,
-                    selectionArgs,
-                    sortOrder
-                )
-                
-                cursor?.use {
-                    if (it.moveToFirst()) {
-                        val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                        val id = it.getLong(idColumn)
-                        val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
-                        Log.d("CameraScreen", "Última foto encontrada en galería: $uri")
-                        return@withContext uri
-                    }
-                }
-                
-                Log.d("CameraScreen", "No se encontraron fotos en la carpeta CamStamp")
-                null
-            } catch (e: Exception) {
-                Log.e("CameraScreen", "Error al buscar última foto: ${e.message}", e)
-                null
-            }
-        }
-    }
 
     // Función simplificada para cargar una imagen. Ya no necesita rotar nada.
     suspend fun loadFinalImage(uri: Uri): ImageBitmap? {
@@ -999,10 +989,10 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     // Registrar sensores de orientación y brújula
     LaunchedEffect(Unit) {
         accelerometer?.let { sensor ->
-            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_UI)
+            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
         }
         magnetometer?.let { sensor ->
-            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_UI)
+            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
         }
     }
     
