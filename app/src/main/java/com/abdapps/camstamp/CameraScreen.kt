@@ -674,12 +674,10 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     var photoId by remember { mutableIntStateOf(0) } // El contador de fotos para refrescar la UI
     var thumbnailImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     
-    // --- Estados para Mensajes de Éxito/Error ---
+    // --- Estados para Mensajes de Error ---
     var showMessageDialog by remember { mutableStateOf(false) }
     var messageTitle by remember { mutableStateOf("") }
     var messageText by remember { mutableStateOf("") }
-    var isSuccessMessage by remember { mutableStateOf(true) }
-    var hasShownThumbnailTip by remember { mutableStateOf(false) }
     
     // --- Estado para detectar orientación del dispositivo ---
     var isDeviceHorizontal by remember { mutableStateOf(false) }
@@ -693,9 +691,9 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     var azimuth by remember { mutableFloatStateOf(0f) } // Dirección de la brújula en grados
     var compassAccuracy by remember { mutableIntStateOf(SensorManager.SENSOR_STATUS_UNRELIABLE) }
     
-    // --- Filtro de suavizado para la brújula ---
+    // --- Filtro de suavizado para la brújula (optimizado) ---
     val azimuthHistory = remember { mutableListOf<Float>() }
-    val maxHistorySize = 5 // Promedio de las últimas 5 lecturas
+    val maxHistorySize = 3 // Reducido de 5 a 3 para mejor rendimiento
     
     // Arrays para los sensores de la brújula
     val accelerometerReading = remember { FloatArray(3) }
@@ -706,17 +704,9 @@ fun CameraScreen(modifier: Modifier = Modifier) {
 
 
     // --- Funciones de Lógica ---
-    val showSuccessMessage: (String) -> Unit = { message ->
-        messageTitle = "¡Éxito!"
-        messageText = message
-        isSuccessMessage = true
-        showMessageDialog = true
-    }
-    
     val showErrorMessage: (String) -> Unit = { message ->
         messageTitle = "Error"
         messageText = message
-        isSuccessMessage = false
         showMessageDialog = true
     }
     
@@ -862,15 +852,15 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                             val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
                             val normalizedAzimuth = (azimuthInDegrees + 360) % 360
                             
-                            // Aplicar filtro de suavizado
+                            // Aplicar filtro de suavizado optimizado
                             azimuthHistory.add(normalizedAzimuth)
                             if (azimuthHistory.size > maxHistorySize) {
-                                azimuthHistory.removeAt(0)
+                                azimuthHistory.removeAt(0) // Compatible con API 24+
                             }
                             
-                            // Calcular promedio suavizado
-                            azimuth = if (azimuthHistory.size >= 3) {
-                                azimuthHistory.average().toFloat()
+                            // Calcular promedio suavizado solo cuando es necesario
+                            azimuth = if (azimuthHistory.size >= 2) {
+                                azimuthHistory.sum() / azimuthHistory.size // Más eficiente que average()
                             } else {
                                 normalizedAzimuth
                             }
@@ -966,13 +956,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     LaunchedEffect(zoomStateValue?.linearZoom) { zoomStateValue?.linearZoom?.let { if (it != linearZoom) linearZoom = it } }
     LaunchedEffect(showFlashEffect) { if (showFlashEffect) { delay(150L); showFlashEffect = false } }
     
-    // Auto-ocultar mensaje de éxito después de 3 segundos
-    LaunchedEffect(showMessageDialog, isSuccessMessage) {
-        if (showMessageDialog && isSuccessMessage) {
-            delay(3000L)
-            showMessageDialog = false
-        }
-    }
+
     
     // Cargar texto personalizado, preferencia de calidad y última foto al iniciar
     LaunchedEffect(Unit) {
@@ -1079,14 +1063,6 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                                 // 4. Actualizar la UI con la URI pública
                                 lastPhotoUri = publicUri
                                 photoId++
-                                
-                                val successMessage = if (!hasShownThumbnailTip) {
-                                    hasShownThumbnailTip = true
-                                    "Foto guardada exitosamente.\n\nTip: Toca la miniatura para abrir en galería."
-                                } else {
-                                    "Foto guardada exitosamente en la galería"
-                                }
-                                showSuccessMessage(successMessage)
                             } else {
                                 Log.e("CameraScreen", "No se pudo guardar la foto en la galería.")
                                 showErrorMessage("No se pudo guardar la foto en la galería")
@@ -1133,7 +1109,6 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 Row {
                     Button(onClick = { 
                         clearCustomText()
-                        showSuccessMessage("Texto personalizado limpiado")
                     }) { 
                         Text("Limpiar") 
                     }
@@ -1152,7 +1127,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
             title = { 
                 Text(
                     text = messageTitle,
-                    color = if (isSuccessMessage) ComposeColor.Green else ComposeColor.Red
+                    color = ComposeColor.Red
                 )
             },
             text = { Text(messageText) },
