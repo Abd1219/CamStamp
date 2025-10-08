@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Explore
@@ -89,6 +90,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.concurrent.futures.await
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
@@ -986,7 +988,14 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 }
                 camera?.cameraControl?.enableTorch(torchEnabled) // Sincroniza el estado de la linterna
 
-                camera?.cameraInfo?.zoomState?.value?.linearZoom?.let { linearZoom = it }
+                // Inicializar el zoom correctamente
+                camera?.cameraInfo?.zoomState?.value?.linearZoom?.let { 
+                    linearZoom = it 
+                } ?: run {
+                    // Si no hay valor inicial, establecer zoom mínimo
+                    linearZoom = 0f
+                    camera?.cameraControl?.setLinearZoom(0f)
+                }
             } catch (exc: Exception) { Log.e("CameraScreen", "Fallo al vincular casos de uso: ${exc.message}", exc) }
         }
     }
@@ -1293,7 +1302,34 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         
         Box(modifier = Modifier.fillMaxWidth().weight(1f)) { 
             if (hasCameraPermission) {
-                AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+                AndroidView(
+                    factory = { previewView }, 
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(camera) {
+                            detectTransformGestures { _, _, zoom, _ ->
+                                camera?.let { cam ->
+                                    // Obtener el zoom actual directamente de la cámara
+                                    val currentZoom = cam.cameraInfo.zoomState.value?.linearZoom ?: 0f
+                                    
+                                    // Calcular el nuevo valor de zoom usando suma/resta con mayor sensibilidad
+                                    val zoomDelta = if (zoom > 1f) {
+                                        // Zoom in: incrementar más rápido
+                                        (zoom - 1f) * 0.3f
+                                    } else {
+                                        // Zoom out: decrementar más rápido
+                                        (zoom - 1f) * 0.3f
+                                    }
+                                    
+                                    val newZoom = (currentZoom + zoomDelta).coerceIn(0f, 1f)
+                                    
+                                    // Actualizar siempre
+                                    cam.cameraControl.setLinearZoom(newZoom)
+                                    linearZoom = newZoom
+                                }
+                            }
+                        }
+                )
             } else {
                 Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                     Text("Se requiere permiso de cámara para usar esta función.", color = ComposeColor.White)
