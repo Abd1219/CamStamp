@@ -26,6 +26,8 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -46,8 +48,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Explore
@@ -223,11 +229,11 @@ fun drawCompassOnCanvas(
     }
     
     // Azimuth con mayor espaciado
-    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - 30f, infoPaint)
+    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - 40f, infoPaint)
     
     // Dirección cardinal
     val direction = getDirectionFromAzimuth(azimuth)
-    canvas.drawText(direction, centerX, centerY + 10f, infoPaint)
+    canvas.drawText(direction, centerX, centerY - 5f, infoPaint)
     
     // Coordenadas (si están disponibles) con mejor espaciado
     if (latitude != null && longitude != null) {
@@ -237,8 +243,8 @@ fun drawCompassOnCanvas(
             textAlign = Paint.Align.CENTER
             isAntiAlias = true
         }
-        canvas.drawText("${String.format(Locale.US, "%.4f", latitude)}°", centerX, centerY + 55f, coordPaint)
-        canvas.drawText("${String.format(Locale.US, "%.4f", longitude)}°", centerX, centerY + 80f, coordPaint)
+        canvas.drawText("${String.format(Locale.US, "%.4f", latitude)}°", centerX, centerY + 35f, coordPaint)
+        canvas.drawText("${String.format(Locale.US, "%.4f", longitude)}°", centerX, centerY + 65f, coordPaint)
     }
     
     // Indicador de precisión de la brújula
@@ -262,7 +268,160 @@ fun drawCompassOnCanvas(
         isAntiAlias = true
     }
     
-    canvas.drawText("Precisión: $accuracyText", centerX, centerY + 110f, accuracyPaint)
+    canvas.drawText("Precisión: $accuracyText", centerX, centerY + 95f, accuracyPaint)
+}
+
+/**
+ * Dibuja una brújula en el canvas de la imagen estampada final con espaciado optimizado
+ */
+fun drawCompassOnStampedImage(
+    canvas: Canvas,
+    bitmap: Bitmap,
+    azimuth: Float,
+    latitude: Double?,
+    longitude: Double?,
+    accuracy: Int
+) {
+    // Calcular tamaño de la brújula proporcional a la imagen
+    val compassSize = minOf(bitmap.width, bitmap.height) * 0.36f // 36% del lado menor (3x más grande)
+    val centerX = bitmap.width * 0.20f // Posición ajustada para la brújula más grande
+    val centerY = bitmap.height * 0.20f
+    val radius = compassSize / 2f - 10f
+    
+    // Configurar paints
+    val circlePaint = Paint().apply {
+        color = android.graphics.Color.argb(80, 0, 0, 0) // Fondo más transparente
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    
+    val strokePaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 3f
+        isAntiAlias = true
+    }
+    
+    val textPaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        textSize = compassSize * 0.08f
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+    }
+    
+    val needlePaint = Paint().apply {
+        color = android.graphics.Color.RED
+        strokeWidth = 4f
+        isAntiAlias = true
+    }
+    
+    // Dibujar fondo circular
+    canvas.drawCircle(centerX, centerY, compassSize / 2f, circlePaint)
+    
+    // Dibujar círculo exterior
+    canvas.drawCircle(centerX, centerY, radius, strokePaint)
+    
+    // Dibujar marcas de dirección (N, S, E, W)
+    val directions = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
+    directions.forEach { (direction, angle) ->
+        val angleRad = Math.toRadians((angle - 90).toDouble())
+        val x = centerX + (radius - 20f) * cos(angleRad).toFloat()
+        val y = centerY + (radius - 20f) * sin(angleRad).toFloat() + textPaint.textSize / 3f
+        
+        val directionPaint = Paint().apply {
+            color = if (direction == "N") android.graphics.Color.RED else android.graphics.Color.WHITE
+            textSize = compassSize * 0.1f
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        
+        canvas.drawText(direction, x, y, directionPaint)
+    }
+    
+    // Dibujar marcas de grados cada 30°
+    for (i in 0 until 360 step 30) {
+        val angleRad = Math.toRadians((i - 90).toDouble())
+        val startX = centerX + (radius - 15f) * cos(angleRad).toFloat()
+        val startY = centerY + (radius - 15f) * sin(angleRad).toFloat()
+        val endX = centerX + radius * cos(angleRad).toFloat()
+        val endY = centerY + radius * sin(angleRad).toFloat()
+        
+        canvas.drawLine(startX, startY, endX, endY, strokePaint)
+    }
+    
+    // Dibujar aguja de la brújula (apunta al norte magnético)
+    val needleAngleRad = Math.toRadians((-azimuth - 90).toDouble())
+    val needleEndX = centerX + (radius - 25f) * cos(needleAngleRad).toFloat()
+    val needleEndY = centerY + (radius - 25f) * sin(needleAngleRad).toFloat()
+    
+    canvas.drawLine(centerX, centerY, needleEndX, needleEndY, needlePaint)
+    
+    // Dibujar triángulo en la punta de la aguja
+    val triangleSize = 12f
+    val tipAngle1 = needleAngleRad + Math.PI / 6
+    val tipAngle2 = needleAngleRad - Math.PI / 6
+    
+    val tip1X = needleEndX + triangleSize * cos(tipAngle1 + Math.PI).toFloat()
+    val tip1Y = needleEndY + triangleSize * sin(tipAngle1 + Math.PI).toFloat()
+    val tip2X = needleEndX + triangleSize * cos(tipAngle2 + Math.PI).toFloat()
+    val tip2Y = needleEndY + triangleSize * sin(tipAngle2 + Math.PI).toFloat()
+    
+    canvas.drawLine(needleEndX, needleEndY, tip1X, tip1Y, needlePaint)
+    canvas.drawLine(needleEndX, needleEndY, tip2X, tip2Y, needlePaint)
+    
+    // Dibujar información central con espaciado optimizado para estampado
+    val infoPaint = Paint().apply {
+        color = android.graphics.Color.WHITE
+        textSize = compassSize * 0.12f
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+        isFakeBoldText = true
+    }
+    
+    // Espaciado más amplio para el estampado final
+    val lineSpacing = compassSize * 0.15f // Espaciado proporcional al tamaño de la brújula
+    
+    // Azimuth
+    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - lineSpacing * 1.5f, infoPaint)
+    
+    // Dirección cardinal
+    val direction = getDirectionFromAzimuth(azimuth)
+    canvas.drawText(direction, centerX, centerY - lineSpacing * 0.3f, infoPaint)
+    
+    // Coordenadas (si están disponibles)
+    if (latitude != null && longitude != null) {
+        val coordPaint = Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = compassSize * 0.08f
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        canvas.drawText("${String.format(Locale.US, "%.4f", latitude)}°", centerX, centerY + lineSpacing * 0.8f, coordPaint)
+        canvas.drawText("${String.format(Locale.US, "%.4f", longitude)}°", centerX, centerY + lineSpacing * 1.4f, coordPaint)
+    }
+    
+    // Indicador de precisión de la brújula
+    val accuracyText = when (accuracy) {
+        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "Alta"
+        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "Media"
+        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "Baja"
+        else -> "Sin calibrar"
+    }
+    
+    val accuracyColor = when (accuracy) {
+        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> android.graphics.Color.GREEN
+        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> android.graphics.Color.YELLOW
+        else -> android.graphics.Color.RED
+    }
+    
+    val accuracyPaint = Paint().apply {
+        color = accuracyColor
+        textSize = compassSize * 0.07f
+        textAlign = Paint.Align.CENTER
+        isAntiAlias = true
+    }
+    
+    canvas.drawText("Precisión: $accuracyText", centerX, centerY + lineSpacing * 2.0f, accuracyPaint)
 }
 
 /**
@@ -447,7 +606,7 @@ suspend fun stampImageWithDetails(
             
             // 5.5. Dibujar brújula si está activada
             if (showCompass) {
-                drawCompassOnCanvas(canvas, mutableBitmap, azimuth, latitude, longitude, compassAccuracy)
+                drawCompassOnStampedImage(canvas, mutableBitmap, azimuth, latitude, longitude, compassAccuracy)
             }
             
             // 6. Guardar el bitmap final
@@ -638,6 +797,97 @@ fun getDirectionFromAzimuth(azimuth: Float): String {
 }
 
 /**
+ * Indicador visual de enfoque que aparece donde el usuario toca
+ */
+@Composable
+fun FocusIndicator(
+    position: Offset,
+    modifier: Modifier = Modifier
+) {
+    // Animación de escala para el efecto de enfoque
+    val scale by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = tween(durationMillis = 300),
+        label = "focus_scale"
+    )
+    
+    // Usar Canvas que ocupe toda la pantalla para dibujar en la posición correcta
+    Canvas(modifier = modifier) {
+        val strokeWidth = 4.dp.toPx()
+        val radius = 40.dp.toPx()
+        val lineLength = 20.dp.toPx()
+        
+        // Dibujar círculo central en la posición del tap
+        drawCircle(
+            color = ComposeColor.Yellow,
+            radius = radius * scale,
+            center = position,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeWidth)
+        )
+        
+        // Dibujar líneas en las esquinas (estilo cámara profesional)
+        val scaledRadius = radius * scale
+        val scaledLineLength = lineLength * scale
+        
+        // Línea superior izquierda
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x - scaledRadius, position.y - scaledRadius),
+            end = Offset(position.x - scaledRadius + scaledLineLength, position.y - scaledRadius),
+            strokeWidth = strokeWidth
+        )
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x - scaledRadius, position.y - scaledRadius),
+            end = Offset(position.x - scaledRadius, position.y - scaledRadius + scaledLineLength),
+            strokeWidth = strokeWidth
+        )
+        
+        // Línea superior derecha
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x + scaledRadius, position.y - scaledRadius),
+            end = Offset(position.x + scaledRadius - scaledLineLength, position.y - scaledRadius),
+            strokeWidth = strokeWidth
+        )
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x + scaledRadius, position.y - scaledRadius),
+            end = Offset(position.x + scaledRadius, position.y - scaledRadius + scaledLineLength),
+            strokeWidth = strokeWidth
+        )
+        
+        // Línea inferior izquierda
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x - scaledRadius, position.y + scaledRadius),
+            end = Offset(position.x - scaledRadius + scaledLineLength, position.y + scaledRadius),
+            strokeWidth = strokeWidth
+        )
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x - scaledRadius, position.y + scaledRadius),
+            end = Offset(position.x - scaledRadius, position.y + scaledRadius - scaledLineLength),
+            strokeWidth = strokeWidth
+        )
+        
+        // Línea inferior derecha
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x + scaledRadius, position.y + scaledRadius),
+            end = Offset(position.x + scaledRadius - scaledLineLength, position.y + scaledRadius),
+            strokeWidth = strokeWidth
+        )
+        drawLine(
+            color = ComposeColor.Yellow,
+            start = Offset(position.x + scaledRadius, position.y + scaledRadius),
+            end = Offset(position.x + scaledRadius, position.y + scaledRadius - scaledLineLength),
+            strokeWidth = strokeWidth
+        )
+    }
+}
+
+/**
  * El Composable principal que muestra la pantalla de la cámara, controles y previsualizaciones.
  */
 @Composable
@@ -693,6 +943,10 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     var showCompass by remember { mutableStateOf(false) }
     var azimuth by remember { mutableFloatStateOf(0f) } // Dirección de la brújula en grados
     var compassAccuracy by remember { mutableIntStateOf(SensorManager.SENSOR_STATUS_UNRELIABLE) }
+    
+    // --- Estados para el indicador de enfoque ---
+    var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    var showFocusIndicator by remember { mutableStateOf(false) }
     
     // --- Filtro de suavizado para la brújula (más estable) ---
     val azimuthHistory = remember { mutableListOf<Float>() }
@@ -959,6 +1213,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 imageCapture = ImageCapture.Builder()
                     .setTargetRotation(previewView.display.rotation)
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setFlashMode(ImageCapture.FLASH_MODE_AUTO)
                     .setResolutionSelector(
                         if (!isHighQuality) {
                             // Configuración para calidad media
@@ -1029,6 +1284,14 @@ fun CameraScreen(modifier: Modifier = Modifier) {
 
     LaunchedEffect(zoomStateValue?.linearZoom) { zoomStateValue?.linearZoom?.let { if (it != linearZoom) linearZoom = it } }
     LaunchedEffect(showFlashEffect) { if (showFlashEffect) { delay(150L); showFlashEffect = false } }
+    
+    // Auto-ocultar indicador de enfoque después de 2 segundos
+    LaunchedEffect(showFocusIndicator) {
+        if (showFocusIndicator) {
+            delay(2000L)
+            showFocusIndicator = false
+        }
+    }
     
 
     
@@ -1307,18 +1570,19 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(camera) {
+                            // Detectar gestos de zoom (pellizco)
                             detectTransformGestures { _, _, zoom, _ ->
                                 camera?.let { cam ->
                                     // Obtener el zoom actual directamente de la cámara
                                     val currentZoom = cam.cameraInfo.zoomState.value?.linearZoom ?: 0f
                                     
-                                    // Calcular el nuevo valor de zoom usando suma/resta con mayor sensibilidad
+                                    // Calcular el nuevo valor de zoom usando suma/resta con alta sensibilidad
                                     val zoomDelta = if (zoom > 1f) {
-                                        // Zoom in: incrementar más rápido
-                                        (zoom - 1f) * 0.3f
+                                        // Zoom in: incrementar mucho más rápido
+                                        (zoom - 1f) * 0.8f
                                     } else {
-                                        // Zoom out: decrementar más rápido
-                                        (zoom - 1f) * 0.3f
+                                        // Zoom out: decrementar mucho más rápido
+                                        (zoom - 1f) * 0.8f
                                     }
                                     
                                     val newZoom = (currentZoom + zoomDelta).coerceIn(0f, 1f)
@@ -1326,6 +1590,31 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                                     // Actualizar siempre
                                     cam.cameraControl.setLinearZoom(newZoom)
                                     linearZoom = newZoom
+                                }
+                            }
+                        }
+                        .pointerInput(camera) {
+                            // Detectar gestos de tap (tocar para enfocar)
+                            detectTapGestures { offset ->
+                                camera?.let { cam ->
+                                    // Mostrar indicador visual en la posición del tap
+                                    focusPoint = offset
+                                    showFocusIndicator = true
+                                    
+                                    // Crear punto de medición basado en la posición del tap
+                                    val factory = SurfaceOrientedMeteringPointFactory(
+                                        size.width.toFloat(), 
+                                        size.height.toFloat()
+                                    )
+                                    val point = factory.createPoint(offset.x, offset.y)
+                                    
+                                    // Crear acción de enfoque y medición
+                                    val action = FocusMeteringAction.Builder(point)
+                                        .setAutoCancelDuration(3, java.util.concurrent.TimeUnit.SECONDS)
+                                        .build()
+                                    
+                                    // Ejecutar el enfoque
+                                    cam.cameraControl.startFocusAndMetering(action)
                                 }
                             }
                         }
@@ -1347,6 +1636,14 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     longitude = longitude,
                     accuracy = compassAccuracy,
                     modifier = Modifier.align(Alignment.Center)
+                )
+            }
+            
+            // Mostrar indicador de enfoque donde se tocó
+            if (showFocusIndicator && focusPoint != null) {
+                FocusIndicator(
+                    position = focusPoint!!,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }
