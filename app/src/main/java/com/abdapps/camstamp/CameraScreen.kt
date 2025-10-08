@@ -70,6 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -691,9 +692,11 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     var azimuth by remember { mutableFloatStateOf(0f) } // Dirección de la brújula en grados
     var compassAccuracy by remember { mutableIntStateOf(SensorManager.SENSOR_STATUS_UNRELIABLE) }
     
-    // --- Filtro de suavizado para la brújula (optimizado) ---
+    // --- Filtro de suavizado para la brújula (más estable) ---
     val azimuthHistory = remember { mutableListOf<Float>() }
-    val maxHistorySize = 3 // Reducido de 5 a 3 para mejor rendimiento
+    val maxHistorySize = 8 // Aumentado para mayor estabilidad
+    var lastUpdateTime by remember { mutableLongStateOf(0L) }
+    val updateInterval = 200L // Actualizar solo cada 200ms
     
     // Arrays para los sensores de la brújula
     val accelerometerReading = remember { FloatArray(3) }
@@ -843,26 +846,88 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     
                     // Calcular azimuth de la brújula si tenemos ambos sensores
                     if (accelerometerReading[0] != 0f && magnetometerReading[0] != 0f) {
+                        // Obtener la orientación actual de la pantalla (API moderna)
+                        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            localContext.display.rotation
+                        } else {
+                            @Suppress("DEPRECATION")
+                            (localContext as android.app.Activity).windowManager.defaultDisplay.rotation
+                        }
+                        
+                        // Crear matriz de rotación compensada por la orientación del dispositivo
+                        val adjustedRotationMatrix = FloatArray(9)
                         val success = SensorManager.getRotationMatrix(
                             rotationMatrix, null, accelerometerReading, magnetometerReading
                         )
+                        
                         if (success) {
-                            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                            // Remapear las coordenadas según la orientación del dispositivo
+                            when (rotation) {
+                                android.view.Surface.ROTATION_0 -> {
+                                    // Vertical normal - no necesita remapeo
+                                    System.arraycopy(rotationMatrix, 0, adjustedRotationMatrix, 0, 9)
+                                }
+                                android.view.Surface.ROTATION_90 -> {
+                                    // Horizontal (girado 90° a la izquierda)
+                                    SensorManager.remapCoordinateSystem(
+                                        rotationMatrix,
+                                        SensorManager.AXIS_Y,
+                                        SensorManager.AXIS_MINUS_X,
+                                        adjustedRotationMatrix
+                                    )
+                                }
+                                android.view.Surface.ROTATION_180 -> {
+                                    // Vertical invertido
+                                    SensorManager.remapCoordinateSystem(
+                                        rotationMatrix,
+                                        SensorManager.AXIS_MINUS_X,
+                                        SensorManager.AXIS_MINUS_Y,
+                                        adjustedRotationMatrix
+                                    )
+                                }
+                                android.view.Surface.ROTATION_270 -> {
+                                    // Horizontal (girado 90° a la derecha)
+                                    SensorManager.remapCoordinateSystem(
+                                        rotationMatrix,
+                                        SensorManager.AXIS_MINUS_Y,
+                                        SensorManager.AXIS_X,
+                                        adjustedRotationMatrix
+                                    )
+                                }
+                                else -> {
+                                    System.arraycopy(rotationMatrix, 0, adjustedRotationMatrix, 0, 9)
+                                }
+                            }
+                            
+                            // Calcular orientación con la matriz ajustada
+                            SensorManager.getOrientation(adjustedRotationMatrix, orientationAngles)
                             val azimuthInRadians = orientationAngles[0]
                             val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
                             val normalizedAzimuth = (azimuthInDegrees + 360) % 360
                             
-                            // Aplicar filtro de suavizado optimizado
-                            azimuthHistory.add(normalizedAzimuth)
-                            if (azimuthHistory.size > maxHistorySize) {
-                                azimuthHistory.removeAt(0) // Compatible con API 24+
-                            }
-                            
-                            // Calcular promedio suavizado solo cuando es necesario
-                            azimuth = if (azimuthHistory.size >= 2) {
-                                azimuthHistory.sum() / azimuthHistory.size // Más eficiente que average()
-                            } else {
-                                normalizedAzimuth
+                            // Filtro de tiempo: solo actualizar cada 200ms
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastUpdateTime >= updateInterval) {
+                                lastUpdateTime = currentTime
+                                
+                                // Aplicar filtro de suavizado más agresivo
+                                azimuthHistory.add(normalizedAzimuth)
+                                if (azimuthHistory.size > maxHistorySize) {
+                                    azimuthHistory.removeAt(0) // Compatible con API 24+
+                                }
+                                
+                                // Calcular promedio suavizado con más datos
+                                azimuth = if (azimuthHistory.size >= 4) {
+                                    // Usar promedio ponderado: más peso a las lecturas recientes
+                                    val weights = azimuthHistory.mapIndexed { index, value ->
+                                        val weight = (index + 1).toFloat() / azimuthHistory.size
+                                        value * weight
+                                    }
+                                    val totalWeight = (1..azimuthHistory.size).sum().toFloat()
+                                    weights.sum() / totalWeight
+                                } else {
+                                    normalizedAzimuth
+                                }
                             }
                         }
                     }
@@ -958,7 +1023,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     
 
     
-    // Cargar texto personalizado, preferencia de calidad y última foto al iniciar
+    // Cargar texto personalizado y preferencia de calidad al iniciar
     LaunchedEffect(Unit) {
         val savedText = loadCustomText()
         currentCustomText = savedText
@@ -966,17 +1031,15 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         
         val savedQuality = loadQualityPreference()
         isHighQuality = savedQuality
-        
-
     }
     
-    // Registrar sensores de orientación y brújula
+    // Registrar sensores de orientación y brújula con frecuencia más lenta
     LaunchedEffect(Unit) {
         accelerometer?.let { sensor ->
-            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_GAME)
         }
         magnetometer?.let { sensor ->
-            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+            sensorManager.registerListener(sensorEventListener, sensor, SensorManager.SENSOR_DELAY_GAME)
         }
     }
     
@@ -996,6 +1059,41 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
         if (fineGranted || coarseGranted) {
             hasLocationPermission = true
+            getCurrentLocation()
+        }
+    }
+    
+    // Verificar y solicitar permisos automáticamente al iniciar
+    LaunchedEffect(Unit) {
+        // Verificar permisos actuales
+        hasCameraPermission = ContextCompat.checkSelfPermission(
+            localContext, 
+            Manifest.permission.CAMERA
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        
+        hasLocationPermission = ContextCompat.checkSelfPermission(
+            localContext, 
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(
+            localContext, 
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        
+        // Si no tiene permisos, solicitarlos automáticamente
+        if (!hasCameraPermission) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+        
+        if (!hasLocationPermission) {
+            locationPermissionLauncher.launch(arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION, 
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ))
+        }
+        
+        // Si ya tiene permisos de ubicación, obtener la ubicación actual
+        if (hasLocationPermission) {
             getCurrentLocation()
         }
     }
