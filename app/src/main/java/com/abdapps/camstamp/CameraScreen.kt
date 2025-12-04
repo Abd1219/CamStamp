@@ -121,156 +121,6 @@ import androidx.camera.core.Preview as CameraXPreview
 import androidx.compose.ui.graphics.Color as ComposeColor
 
 /**
- * Dibuja una brújula en el canvas de la imagen
- */
-fun drawCompassOnCanvas(
-    canvas: Canvas,
-    bitmap: Bitmap,
-    azimuth: Float,
-    latitude: Double?,
-    longitude: Double?,
-    accuracy: Int
-) {
-    // Calcular tamaño de la brújula proporcional a la imagen
-    val compassSize = minOf(bitmap.width, bitmap.height) * 0.36f // 36% del lado menor (3x más grande)
-    val centerX = bitmap.width * 0.20f // Posición ajustada para la brújula más grande
-    val centerY = bitmap.height * 0.20f
-    val radius = compassSize / 2f - 10f
-    
-    // Configurar paints
-    val circlePaint = Paint().apply {
-        color = android.graphics.Color.argb(80, 0, 0, 0) // Fondo más transparente
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-    
-    val strokePaint = Paint().apply {
-        color = android.graphics.Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-        isAntiAlias = true
-    }
-    
-    val textPaint = Paint().apply {
-        color = android.graphics.Color.WHITE
-        textSize = compassSize * 0.08f
-        textAlign = Paint.Align.CENTER
-        isAntiAlias = true
-    }
-    
-    val needlePaint = Paint().apply {
-        color = android.graphics.Color.RED
-        strokeWidth = 4f
-        isAntiAlias = true
-    }
-    
-    // Dibujar fondo circular
-    canvas.drawCircle(centerX, centerY, compassSize / 2f, circlePaint)
-    
-    // Dibujar círculo exterior
-    canvas.drawCircle(centerX, centerY, radius, strokePaint)
-    
-    // Dibujar marcas de dirección (N, S, E, W)
-    val directions = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
-    directions.forEach { (direction, angle) ->
-        val angleRad = Math.toRadians((angle - 90).toDouble())
-        val x = centerX + (radius - 20f) * cos(angleRad).toFloat()
-        val y = centerY + (radius - 20f) * sin(angleRad).toFloat() + textPaint.textSize / 3f
-        
-        val directionPaint = Paint().apply {
-            color = if (direction == "N") android.graphics.Color.RED else android.graphics.Color.WHITE
-            textSize = compassSize * 0.1f
-            textAlign = Paint.Align.CENTER
-            isAntiAlias = true
-        }
-        
-        canvas.drawText(direction, x, y, directionPaint)
-    }
-    
-    // Dibujar marcas de grados cada 30°
-    for (i in 0 until 360 step 30) {
-        val angleRad = Math.toRadians((i - 90).toDouble())
-        val startX = centerX + (radius - 15f) * cos(angleRad).toFloat()
-        val startY = centerY + (radius - 15f) * sin(angleRad).toFloat()
-        val endX = centerX + radius * cos(angleRad).toFloat()
-        val endY = centerY + radius * sin(angleRad).toFloat()
-        
-        canvas.drawLine(startX, startY, endX, endY, strokePaint)
-    }
-    
-    // Dibujar aguja de la brújula (apunta al norte magnético)
-    val needleAngleRad = Math.toRadians((-azimuth - 90).toDouble())
-    val needleEndX = centerX + (radius - 25f) * cos(needleAngleRad).toFloat()
-    val needleEndY = centerY + (radius - 25f) * sin(needleAngleRad).toFloat()
-    
-    canvas.drawLine(centerX, centerY, needleEndX, needleEndY, needlePaint)
-    
-    // Dibujar triángulo en la punta de la aguja
-    val triangleSize = 12f
-    val tipAngle1 = needleAngleRad + Math.PI / 6
-    val tipAngle2 = needleAngleRad - Math.PI / 6
-    
-    val tip1X = needleEndX + triangleSize * cos(tipAngle1 + Math.PI).toFloat()
-    val tip1Y = needleEndY + triangleSize * sin(tipAngle1 + Math.PI).toFloat()
-    val tip2X = needleEndX + triangleSize * cos(tipAngle2 + Math.PI).toFloat()
-    val tip2Y = needleEndY + triangleSize * sin(tipAngle2 + Math.PI).toFloat()
-    
-    canvas.drawLine(needleEndX, needleEndY, tip1X, tip1Y, needlePaint)
-    canvas.drawLine(needleEndX, needleEndY, tip2X, tip2Y, needlePaint)
-    
-    // Dibujar información central con mejor tamaño y espaciado
-    val infoPaint = Paint().apply {
-        color = android.graphics.Color.WHITE
-        textSize = compassSize * 0.12f // Aumentado de 0.06f a 0.12f (2x más grande)
-        textAlign = Paint.Align.CENTER
-        isAntiAlias = true
-        isFakeBoldText = true // Texto en negrita para mejor legibilidad
-    }
-    
-    // Azimuth con mayor espaciado
-    canvas.drawText("${azimuth.toInt()}°", centerX, centerY - 40f, infoPaint)
-    
-    // Dirección cardinal
-    val direction = getDirectionFromAzimuth(azimuth)
-    canvas.drawText(direction, centerX, centerY - 5f, infoPaint)
-    
-    // Coordenadas (si están disponibles) con mejor espaciado
-    if (latitude != null && longitude != null) {
-        val coordPaint = Paint().apply {
-            color = android.graphics.Color.WHITE
-            textSize = compassSize * 0.08f // Aumentado de 0.04f a 0.08f (2x más grande)
-            textAlign = Paint.Align.CENTER
-            isAntiAlias = true
-        }
-        canvas.drawText("${String.format(Locale.US, "%.4f", latitude)}°", centerX, centerY + 35f, coordPaint)
-        canvas.drawText("${String.format(Locale.US, "%.4f", longitude)}°", centerX, centerY + 65f, coordPaint)
-    }
-    
-    // Indicador de precisión de la brújula
-    val accuracyText = when (accuracy) {
-        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "Alta"
-        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "Media"
-        SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "Baja"
-        else -> "Sin calibrar"
-    }
-    
-    val accuracyColor = when (accuracy) {
-        SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> android.graphics.Color.GREEN
-        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> android.graphics.Color.YELLOW
-        else -> android.graphics.Color.RED
-    }
-    
-    val accuracyPaint = Paint().apply {
-        color = accuracyColor
-        textSize = compassSize * 0.07f // Aumentado de 0.035f a 0.07f (2x más grande)
-        textAlign = Paint.Align.CENTER
-        isAntiAlias = true
-    }
-    
-    canvas.drawText("Precisión: $accuracyText", centerX, centerY + 95f, accuracyPaint)
-}
-
-/**
  * Dibuja una brújula en el canvas de la imagen estampada final con espaciado optimizado
  */
 fun drawCompassOnStampedImage(
@@ -1160,9 +1010,8 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                             val normalizedAzimuth = (azimuthInDegrees + 360) % 360
                             
                             // Filtro de tiempo: solo actualizar cada 200ms
-                            val currentTime = System.currentTimeMillis()
-                            if (currentTime - lastUpdateTime >= updateInterval) {
-                                lastUpdateTime = currentTime
+                            if (System.currentTimeMillis() - lastUpdateTime >= updateInterval) {
+                                lastUpdateTime = System.currentTimeMillis()
                                 
                                 // Aplicar filtro de suavizado más agresivo
                                 azimuthHistory.add(normalizedAzimuth)
@@ -1663,28 +1512,24 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                     )
                     
                     // Slider de zoom mejorado
-                    Box(
-                        modifier = Modifier.padding(horizontal = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Slider(
-                            value = linearZoom, 
-                            onValueChange = { newValue ->
-                                linearZoom = newValue
-                                camera?.cameraControl?.setLinearZoom(newValue)
-                            }, 
-                            valueRange = 0f..1f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = ComposeColor.White,
-                                activeTrackColor = ComposeColor.White.copy(alpha = 0.8f),
-                                inactiveTrackColor = ComposeColor.White.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier
-                                .graphicsLayer(rotationZ = -90f)
-                                .width(200.dp) // Slider más largo (aumentado de 140dp)
-                                .height(80.dp) // Área táctil más grande (aumentado de 60dp)
-                        )
-                    }
+                    Slider(
+                        value = linearZoom, 
+                        onValueChange = { newValue ->
+                            linearZoom = newValue
+                            camera?.cameraControl?.setLinearZoom(newValue)
+                        }, 
+                        valueRange = 0f..1f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = ComposeColor.White,
+                            activeTrackColor = ComposeColor.White.copy(alpha = 0.8f),
+                            inactiveTrackColor = ComposeColor.White.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier
+                            .padding(horizontal = 10.dp)
+                            .graphicsLayer(rotationZ = -90f)
+                            .width(200.dp) // Slider más largo (aumentado de 140dp)
+                            .height(80.dp) // Área táctil más grande (aumentado de 60dp)
+                    )
                 }
                 
                 IconButton(onClick = { 
