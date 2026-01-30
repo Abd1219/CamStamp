@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.FeaturedVideo
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.AlertDialog
@@ -295,7 +296,8 @@ suspend fun stampImageWithDetails(
     wasDeviceHorizontal: Boolean = false,
     showCompass: Boolean = false,
     azimuth: Float = 0f,
-    compassAccuracy: Int = SensorManager.SENSOR_STATUS_UNRELIABLE
+    compassAccuracy: Int = SensorManager.SENSOR_STATUS_UNRELIABLE,
+    showTextBackground: Boolean = true
 ): Boolean {
     return withContext(Dispatchers.IO) {
         var originalBitmap: Bitmap? = null
@@ -437,14 +439,16 @@ suspend fun stampImageWithDetails(
                 val yPosOfTopVisualLine = mutableBitmap.height - padding - totalBlockDrawingHeight
                 val yPosOfBottomVisualLine = yPosOfTopVisualLine + (lines.size - 1) * effectiveLineHeight
 
-                val fm = textPaint.fontMetrics
-                canvas.drawRect(
-                    textAlignmentX - maxWidth - (padding / 2f),
-                    yPosOfTopVisualLine + fm.ascent - (padding / 2f),
-                    textAlignmentX + (padding / 2f),
-                    yPosOfBottomVisualLine + fm.descent + (padding / 2f),
-                    backgroundPaint
-                )
+                if (showTextBackground) {
+                    val fm = textPaint.fontMetrics
+                    canvas.drawRect(
+                        textAlignmentX - maxWidth - (padding / 2f),
+                        yPosOfTopVisualLine + fm.ascent - (padding / 2f),
+                        textAlignmentX + (padding / 2f),
+                        yPosOfBottomVisualLine + fm.descent + (padding / 2f),
+                        backgroundPaint
+                    )
+                }
 
                 var currentLineBaselineY = yPosOfTopVisualLine
                 for (line in lines) {
@@ -796,6 +800,9 @@ fun CameraScreen(modifier: Modifier = Modifier) {
     // --- Estados para el indicador de enfoque ---
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var showFocusIndicator by remember { mutableStateOf(false) }
+
+    // --- Estado para el fondo del texto ---
+    var showTextBackground by remember { mutableStateOf(true) }
     
     // --- Filtro de suavizado para la brújula (más estable) ---
     val azimuthHistory = remember { mutableListOf<Float>() }
@@ -890,6 +897,28 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         } catch (e: Exception) {
             Log.e("CameraScreen", "Error al cargar preferencia de calidad: ${e.message}", e)
             true // Por defecto alta calidad
+        }
+    }
+
+    val saveTextBackgroundPreference: (Boolean) -> Unit = { showBackground ->
+        try {
+            sharedPreferences.edit {
+                putBoolean("show_text_background", showBackground)
+            }
+            Log.d("CameraScreen", "Preferencia de fondo de texto guardada: $showBackground")
+        } catch (e: Exception) {
+            Log.e("CameraScreen", "Error al guardar preferencia de fondo de texto: ${e.message}", e)
+        }
+    }
+
+    val loadTextBackgroundPreference: () -> Boolean = {
+        try {
+            val savedShowBackground = sharedPreferences.getBoolean("show_text_background", true) // Por defecto true
+            Log.d("CameraScreen", "Preferencia de fondo de texto cargada: $savedShowBackground")
+            savedShowBackground
+        } catch (e: Exception) {
+            Log.e("CameraScreen", "Error al cargar preferencia de fondo de texto: ${e.message}", e)
+            true // Por defecto true
         }
     }
 
@@ -1150,6 +1179,9 @@ fun CameraScreen(modifier: Modifier = Modifier) {
         
         val savedQuality = loadQualityPreference()
         isHighQuality = savedQuality
+
+        val savedTextBackground = loadTextBackgroundPreference()
+        showTextBackground = savedTextBackground
     }
     
     // Registrar sensores de orientación y brújula con frecuencia más lenta
@@ -1272,7 +1304,7 @@ fun CameraScreen(modifier: Modifier = Modifier) {
                 lifecycleOwner.lifecycleScope.launch {
                     try {
                         // 2. Procesar la imagen (rotar, estampar, corregir EXIF)
-                        val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext, isDeviceHorizontal, showCompass, azimuth, compassAccuracy)
+                        val stamped = stampImageWithDetails(photoFile, currentCustomText, latitude, longitude, localContext, isDeviceHorizontal, showCompass, azimuth, compassAccuracy, showTextBackground)
                         if (stamped) {
                             // 3. Mover la imagen procesada a la galería pública
                             val publicUri = saveFileToMediaStore(localContext, photoFile)
@@ -1366,6 +1398,18 @@ fun CameraScreen(modifier: Modifier = Modifier) {
             ) {
                 IconButton(onClick = { textFieldValue = currentCustomText; showCustomTextDialog = true }) {
                     Icon(imageVector = Icons.Filled.Edit, contentDescription = "Texto Personalizado", tint = ComposeColor.White)
+                }
+
+                // Botón de fondo de texto
+                IconButton(onClick = { 
+                    showTextBackground = !showTextBackground
+                    saveTextBackgroundPreference(showTextBackground)
+                }) {
+                    Icon(
+                        imageVector = Icons.Filled.FeaturedVideo,
+                        contentDescription = if (showTextBackground) "Ocultar Fondo" else "Mostrar Fondo",
+                        tint = if (showTextBackground) ComposeColor.Green else ComposeColor.White
+                    )
                 }
                 
                 // Botón de calidad de imagen
